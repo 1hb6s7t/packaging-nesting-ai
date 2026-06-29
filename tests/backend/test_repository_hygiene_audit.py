@@ -27,6 +27,9 @@ def test_repository_hygiene_audit_accepts_current_gitignore() -> None:
 
     assert report["status"] == "passed"
     assert report["summary"]["missing_pattern_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
+    assert report["policy_contract"]["status"] == "passed"
     assert ".env.*" in report["observed_patterns"]
     assert "!.env.production.example" in report["observed_patterns"]
     assert "artifacts/" in report["observed_patterns"]
@@ -41,9 +44,28 @@ def test_repository_hygiene_audit_rejects_missing_secret_and_artifact_rules(tmp_
     report = module.build_repository_hygiene_audit(gitignore_file=gitignore)
 
     assert report["status"] == "failed"
+    failed_codes = {check["code"] for check in report["policy_contract"]["failed_checks"]}
+    assert report["summary"]["policy_contract_status"] == "failed"
+    assert "gitignore.required_patterns" in failed_codes
+    assert "secrets.env_ignored" in failed_codes
+    assert "release_artifacts.ignored" in failed_codes
     assert ".gitignore is missing required pattern: .env.*" in report["errors"]
     assert ".gitignore is missing required pattern: artifacts/" in report["errors"]
     assert ".gitignore is missing required pattern: tmp/" in report["errors"]
+
+
+def test_repository_hygiene_audit_requires_env_template_unignore(tmp_path: Path) -> None:
+    module = load_repository_hygiene_audit_module()
+    gitignore = tmp_path / ".gitignore"
+    patterns = [pattern for pattern in module.REQUIRED_IGNORE_PATTERNS if pattern != "!.env.production.example"]
+    gitignore.write_text("\n".join(patterns) + "\n", encoding="utf-8")
+
+    report = module.build_repository_hygiene_audit(gitignore_file=gitignore)
+
+    failed_codes = {check["code"] for check in report["policy_contract"]["failed_checks"]}
+    assert report["status"] == "failed"
+    assert "secrets.env_ignored" in failed_codes
+    assert ".gitignore must unignore .env.production.example when .env.* is ignored" in report["errors"]
 
 
 def test_repository_hygiene_audit_cli_writes_report(tmp_path: Path) -> None:
@@ -55,4 +77,5 @@ def test_repository_hygiene_audit_cli_writes_report(tmp_path: Path) -> None:
     written = json.loads(output.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert written["status"] == "passed"
+    assert written["summary"]["policy_contract_status"] == "passed"
     assert written["summary"]["required_pattern_count"] == len(module.REQUIRED_IGNORE_PATTERNS)
