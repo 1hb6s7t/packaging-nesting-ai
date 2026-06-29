@@ -112,12 +112,25 @@ jobs:
             --output tmp/ci-release-preflight-verification.json \
             --allow-skipped-frontend
 
+      - name: Build CI evidence manifest
+        run: |
+          python scripts/ci_evidence_manifest.py \
+            --preflight-report tmp/ci-release-preflight.json \
+            --preflight-verification tmp/ci-release-preflight-verification.json \
+            --dependency-inventory tmp/ci-dependency-inventory.json \
+            --evidence-dir tmp/ci-release-evidence \
+            --output tmp/ci-evidence-manifest.json \
+            --allow-skipped-frontend \
+            --frontend-build-job "Frontend build" \
+            --frontend-artifact-name "frontend-dist-${{ github.sha }}"
+
       - name: Upload release preflight evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-preflight-evidence-${{ github.sha }}
           path: |
+            tmp/ci-evidence-manifest.json
             tmp/ci-release-preflight.json
             tmp/ci-release-preflight-verification.json
             tmp/ci-dependency-inventory.json

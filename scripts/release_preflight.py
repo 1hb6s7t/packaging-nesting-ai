@@ -53,6 +53,7 @@ TARGETED_BACKEND_TESTS = [
     "tests/backend/test_go_live_remediation_packet.py",
     "tests/backend/test_release_evidence_pack.py",
     "tests/backend/test_verify_release_evidence_pack.py",
+    "tests/backend/test_ci_evidence_manifest.py",
     "tests/backend/test_release_inventory.py",
     "tests/backend/test_verify_release_preflight.py",
     "tests/backend/test_release_preflight.py",
