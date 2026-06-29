@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
@@ -27,6 +28,10 @@ def test_solver_governance_audit_passes_registry_guards_rectpack_and_benchmark()
 
     assert report["status"] == "passed"
     assert report["summary"]["failed_count"] == 0
+    assert report["policy_contract"]["status"] == "passed"
+    assert report["policy_contract"]["failed_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
     assert report["registry"]["solver_count"] == 5
     assert report["registry"]["enabled_unconfigured_stubs"] == []
     assert report["registry"]["rectpack"]["enabled"] is True
@@ -52,6 +57,60 @@ def test_solver_governance_audit_passes_registry_guards_rectpack_and_benchmark()
     assert all(check["status"] == "passed" for check in report["checks"])
 
 
+def test_solver_policy_contract_fails_when_rectpack_license_is_not_open_source() -> None:
+    module = load_solver_governance_audit_module()
+    report = module.build_solver_governance_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["registry"]["rectpack"]["license_policy"] = "commercial"
+
+    policy = module.validate_solver_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "registry.rectpack.default")
+    assert failed_check["evidence"]["license_policy"] == "commercial"
+
+
+def test_solver_policy_contract_fails_when_external_stub_is_enabled() -> None:
+    module = load_solver_governance_audit_module()
+    report = module.build_solver_governance_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["registry"]["external_solvers"][0]["enabled"] = True
+
+    policy = module.validate_solver_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "registry.external.disabled")
+    assert broken_report["registry"]["external_solvers"][0]["name"] in failed_check["evidence"]["enabled_external_names"]
+
+
+def test_solver_policy_contract_fails_when_runtime_guard_is_missing() -> None:
+    module = load_solver_governance_audit_module()
+    report = module.build_solver_governance_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["guards"]["runtime_enabled_stub_rejected"] = False
+
+    policy = module.validate_solver_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "guards.enablement")
+    assert failed_check["evidence"]["runtime_enabled_stub_rejected"] is False
+
+
+def test_solver_policy_contract_fails_when_benchmark_is_not_persisted() -> None:
+    module = load_solver_governance_audit_module()
+    report = module.build_solver_governance_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["benchmark"]["persisted_run_count"] = 0
+    broken_report["benchmark"]["run_id"] = None
+
+    policy = module.validate_solver_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "benchmark.persistence")
+    assert failed_check["evidence"]["persisted_run_count"] == 0
+    assert failed_check["evidence"]["run_id_present"] is False
+
+
 def test_solver_governance_audit_fails_when_enabled_external_stub_exists() -> None:
     module = load_solver_governance_audit_module()
 
@@ -59,6 +118,8 @@ def test_solver_governance_audit_fails_when_enabled_external_stub_exists() -> No
 
     assert report["status"] == "failed"
     assert report["summary"]["failed_count"] >= 1
+    assert report["policy_contract"]["status"] == "failed"
+    assert report["summary"]["policy_contract_failed_count"] >= 1
     assert report["summary"]["enabled_unconfigured_stub_count"] == 1
     assert report["registry"]["enabled_unconfigured_stubs"] == ["OrToolsSolver"]
     assert any(

@@ -33,6 +33,7 @@ def build_solver_governance_audit_report(*, simulate_enabled_stub: bool = False)
         "generated_at": datetime.now(UTC).isoformat(),
         "status": "failed",
         "summary": {},
+        "policy_contract": {},
         "checks": [],
         "registry": {},
         "guards": {},
@@ -59,6 +60,7 @@ def build_solver_governance_audit_report(*, simulate_enabled_stub: bool = False)
 
     report.update(workflow)
     report["checks"] = validate_workflow(report)
+    report["policy_contract"] = validate_solver_policy_contract(report)
     report["summary"] = build_summary(report)
     report["status"] = "passed" if report["summary"]["failed_count"] == 0 else "failed"
     return report
@@ -353,18 +355,263 @@ def validate_workflow(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def validate_solver_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    registry = report.get("registry") or {}
+    rectpack_registry = registry.get("rectpack") or {}
+    external_solvers = registry.get("external_solvers") if isinstance(registry.get("external_solvers"), list) else []
+    guards = report.get("guards") or {}
+    rectpack = report.get("rectpack") or {}
+    benchmark = report.get("benchmark") or {}
+    adapters = report.get("adapters") or {}
+    expected_names = expected_solver_names()
+    expected_external_names = expected_external_solver_names()
+    registered_names = sorted(str(name) for name in registry.get("registered_names") or [])
+    checks: list[dict[str, Any]] = [
+        policy_check(
+            code="schema.version",
+            status="passed" if report.get("schema_version") == 1 else "failed",
+            message="solver governance audit schema_version is 1"
+            if report.get("schema_version") == 1
+            else "solver governance audit schema_version must be 1",
+            evidence={"schema_version": report.get("schema_version")},
+        ),
+        policy_check(
+            code="registry.template",
+            status="passed"
+            if registry.get("solver_count") == registry.get("expected_solver_count")
+            and registered_names == expected_names
+            and sorted(registry.get("expected_names") or []) == expected_names
+            else "failed",
+            message="solver registry matches the governed template"
+            if registry.get("solver_count") == registry.get("expected_solver_count")
+            and registered_names == expected_names
+            and sorted(registry.get("expected_names") or []) == expected_names
+            else "solver registry must match the governed template",
+            evidence={
+                "solver_count": registry.get("solver_count"),
+                "expected_solver_count": registry.get("expected_solver_count"),
+                "registered_names": registered_names,
+                "expected_names": expected_names,
+            },
+        ),
+        policy_check(
+            code="registry.rectpack.default",
+            status="passed"
+            if rectpack_registry.get("enabled") is True
+            and rectpack_registry.get("license_policy") == "open_source"
+            and not is_unconfigured_solver_version(rectpack_registry.get("version"))
+            else "failed",
+            message="Rectpack is the enabled open-source default solver"
+            if rectpack_registry.get("enabled") is True
+            and rectpack_registry.get("license_policy") == "open_source"
+            and not is_unconfigured_solver_version(rectpack_registry.get("version"))
+            else "Rectpack must be enabled, open_source, and configured",
+            evidence={
+                "enabled": rectpack_registry.get("enabled"),
+                "license_policy": rectpack_registry.get("license_policy"),
+                "version": rectpack_registry.get("version"),
+            },
+        ),
+        policy_check(
+            code="registry.external.disabled",
+            status="passed"
+            if registry.get("external_disabled_count") == len(external_solvers)
+            and not registry.get("enabled_unconfigured_stubs")
+            and all(not bool(item.get("enabled")) for item in external_solvers)
+            else "failed",
+            message="external solver stubs are disabled"
+            if registry.get("external_disabled_count") == len(external_solvers)
+            and not registry.get("enabled_unconfigured_stubs")
+            and all(not bool(item.get("enabled")) for item in external_solvers)
+            else "external solver stubs must remain disabled until configured",
+            evidence={
+                "external_disabled_count": registry.get("external_disabled_count"),
+                "external_solver_count": len(external_solvers),
+                "enabled_unconfigured_stubs": registry.get("enabled_unconfigured_stubs") or [],
+                "enabled_external_names": sorted(item.get("name") for item in external_solvers if item.get("enabled")),
+            },
+        ),
+        policy_check(
+            code="registry.external.stub_versions",
+            status="passed" if all(is_unconfigured_solver_version(item.get("version")) for item in external_solvers) else "failed",
+            message="external solvers are explicit placeholder adapter versions"
+            if all(is_unconfigured_solver_version(item.get("version")) for item in external_solvers)
+            else "external solver placeholders must declare external-adapter-stub versions until configured",
+            evidence={
+                "versions": {str(item.get("name")): item.get("version") for item in external_solvers},
+                "required_prefix": repository.UNCONFIGURED_SOLVER_VERSION_PREFIX,
+            },
+        ),
+        policy_check(
+            code="registry.external.license_policy",
+            status="passed"
+            if all(str(item.get("license_policy") or "") in {"commercial", "review_required"} for item in external_solvers)
+            else "failed",
+            message="external solver license policies require review or commercial approval"
+            if all(str(item.get("license_policy") or "") in {"commercial", "review_required"} for item in external_solvers)
+            else "external solver license policies must remain commercial or review_required before enablement",
+            evidence={
+                "policies": {str(item.get("name")): item.get("license_policy") for item in external_solvers},
+            },
+        ),
+        policy_check(
+            code="guards.enablement",
+            status="passed"
+            if bool(guards.get("stub_enable_rejected"))
+            and bool(guards.get("disabled_license_rejected"))
+            and bool(guards.get("runtime_enabled_stub_rejected"))
+            else "failed",
+            message="solver enablement guards reject unconfigured or disabled solvers"
+            if bool(guards.get("stub_enable_rejected"))
+            and bool(guards.get("disabled_license_rejected"))
+            and bool(guards.get("runtime_enabled_stub_rejected"))
+            else "solver enablement guards must reject unconfigured or disabled solvers",
+            evidence={
+                "stub_enable_rejected": bool(guards.get("stub_enable_rejected")),
+                "disabled_license_rejected": bool(guards.get("disabled_license_rejected")),
+                "runtime_enabled_stub_rejected": bool(guards.get("runtime_enabled_stub_rejected")),
+            },
+        ),
+        policy_check(
+            code="adapters.placeholder_boundary",
+            status="passed"
+            if sorted(adapters.get("registered_names") or []) == expected_names
+            and sorted(adapters.get("external_placeholder_names") or []) == expected_external_names
+            else "failed",
+            message="orchestrator registers all solvers while external adapters remain placeholders"
+            if sorted(adapters.get("registered_names") or []) == expected_names
+            and sorted(adapters.get("external_placeholder_names") or []) == expected_external_names
+            else "orchestrator must register all solvers and keep external adapters as placeholders",
+            evidence={
+                "registered_names": sorted(adapters.get("registered_names") or []),
+                "external_placeholder_names": sorted(adapters.get("external_placeholder_names") or []),
+                "expected_external_names": expected_external_names,
+            },
+        ),
+        policy_check(
+            code="rectpack.validation",
+            status="passed"
+            if bool(rectpack.get("valid"))
+            and rectpack.get("solution_status") == "valid"
+            and rectpack.get("placed_count") == rectpack.get("candidate_count")
+            and int(rectpack.get("unplaced_count") or 0) == 0
+            and float(rectpack.get("utilization_rate") or 0) > 0
+            else "failed",
+            message="Rectpack audit solution is valid and places all sample items"
+            if bool(rectpack.get("valid"))
+            and rectpack.get("solution_status") == "valid"
+            and rectpack.get("placed_count") == rectpack.get("candidate_count")
+            and int(rectpack.get("unplaced_count") or 0) == 0
+            and float(rectpack.get("utilization_rate") or 0) > 0
+            else "Rectpack audit solution must be valid and place all sample items",
+            evidence={
+                "solution_status": rectpack.get("solution_status"),
+                "valid": bool(rectpack.get("valid")),
+                "placed_count": rectpack.get("placed_count"),
+                "candidate_count": rectpack.get("candidate_count"),
+                "unplaced_count": rectpack.get("unplaced_count"),
+                "utilization_rate": rectpack.get("utilization_rate"),
+            },
+        ),
+        policy_check(
+            code="rectpack.determinism",
+            status="passed" if bool(rectpack.get("deterministic_placement")) and bool(rectpack.get("placement_signature")) else "failed",
+            message="Rectpack sample placement is deterministic"
+            if bool(rectpack.get("deterministic_placement")) and bool(rectpack.get("placement_signature"))
+            else "Rectpack sample placement must be deterministic",
+            evidence={
+                "deterministic_placement": bool(rectpack.get("deterministic_placement")),
+                "placement_count": len(rectpack.get("placement_signature") or []),
+            },
+        ),
+        policy_check(
+            code="benchmark.persistence",
+            status="passed"
+            if bool(benchmark.get("valid"))
+            and benchmark.get("solver_name") == schemas.SolverName.rectpack.value
+            and int(benchmark.get("persisted_run_count") or 0) >= 1
+            and present(benchmark.get("run_id"))
+            else "failed",
+            message="benchmark run is valid, persisted, and tied to Rectpack"
+            if bool(benchmark.get("valid"))
+            and benchmark.get("solver_name") == schemas.SolverName.rectpack.value
+            and int(benchmark.get("persisted_run_count") or 0) >= 1
+            and present(benchmark.get("run_id"))
+            else "benchmark audit must persist a valid Rectpack run",
+            evidence={
+                "valid": bool(benchmark.get("valid")),
+                "solver_name": benchmark.get("solver_name"),
+                "persisted_run_count": benchmark.get("persisted_run_count"),
+                "run_id_present": present(benchmark.get("run_id")),
+            },
+        ),
+    ]
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
+
+
+def expected_solver_names() -> list[str]:
+    return sorted(str(item["name"]) for item in repository.DEFAULT_SOLVER_REGISTRY)
+
+
+def expected_external_solver_names() -> list[str]:
+    return sorted(str(item["name"]) for item in repository.DEFAULT_SOLVER_REGISTRY if item["name"] != schemas.SolverName.rectpack.value)
+
+
+def is_unconfigured_solver_version(value: Any) -> bool:
+    return str(value or "").strip().lower().startswith(repository.UNCONFIGURED_SOLVER_VERSION_PREFIX)
+
+
+def present(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
 def check_result(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "status": "passed" if passed else "failed", "detail": detail}
 
 
 def build_summary(report: dict[str, Any]) -> dict[str, Any]:
     checks = report.get("checks") or []
+    policy_contract = report.get("policy_contract") or {}
+    policy_failed_count = int(policy_contract.get("failed_count") or 0)
+    policy_warning_count = int(policy_contract.get("warning_count") or 0)
     registry = report.get("registry") or {}
     rectpack = report.get("rectpack") or {}
     benchmark = report.get("benchmark") or {}
     return {
         "check_count": len(checks),
-        "failed_count": sum(1 for item in checks if item.get("status") != "passed") + len(report.get("errors") or []),
+        "failed_count": sum(1 for item in checks if item.get("status") != "passed")
+        + policy_failed_count
+        + len(report.get("errors") or []),
+        "policy_contract_status": policy_contract.get("status"),
+        "policy_contract_failed_count": policy_failed_count,
+        "policy_contract_warning_count": policy_warning_count,
         "solver_count": registry.get("solver_count"),
         "enabled_unconfigured_stub_count": len(registry.get("enabled_unconfigured_stubs") or []),
         "rectpack_valid": rectpack.get("valid"),
