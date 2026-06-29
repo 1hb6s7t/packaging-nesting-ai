@@ -41,6 +41,10 @@ REQUIRED_SAMPLE_KEYS_BY_SYSTEM_TYPE = {
     "mes": ("mes",),
     "erp": ("erp_inventory", "erp_delivery"),
 }
+SYNC_STRATEGY_REQUIRED_SAMPLE_KEYS = {"crm", "mes"}
+PAGINATION_MARKER_PATH_KEYS = ("next_url_path", "next_cursor_path", "next_page_path")
+INCREMENTAL_RESPONSE_CURSOR_PATH_KEYS = ("incremental_cursor_path", "next_incremental_cursor_path", "sync_cursor_path")
+INCREMENTAL_RECORD_CURSOR_PATH_KEYS = ("record_cursor_path", "incremental_record_cursor_path")
 EXPECTED_SAMPLE_CONTRACTS = {
     "crm": {"system_type": "crm"},
     "mes": {"system_type": "mes", "domain_target": "production_schedule"},
@@ -99,6 +103,7 @@ def build_customer_sandbox_audit_report(
         "summary": {},
         "organization": {},
         "pack_contract": {},
+        "sync_strategy_contract": {},
         "business_flow_contract": {},
         "adapters": [],
         "readiness": {},
@@ -123,6 +128,10 @@ def build_customer_sandbox_audit_report(
 
     report["pack_contract"] = validate_pack_contract(pack, required_system_types=required_types)
     if report["pack_contract"]["failed_count"]:
+        report["summary"] = build_summary(report, required_types)
+        return report
+    report["sync_strategy_contract"] = validate_sync_strategy_contract(pack, required_system_types=required_types)
+    if report["sync_strategy_contract"]["failed_count"]:
         report["summary"] = build_summary(report, required_types)
         return report
     report["business_flow_contract"] = validate_business_flow_contract(pack, required_system_types=required_types)
@@ -606,6 +615,197 @@ def validate_organization_acceptance_contract(
     ]
 
 
+def validate_sync_strategy_contract(pack: dict[str, Any], *, required_system_types: list[str]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    required_keys = set(required_sample_keys(required_system_types))
+    for sample_key, entry in pack.items():
+        if sample_key in PACK_METADATA_KEYS or not isinstance(entry, dict):
+            continue
+        config = entry.get("config")
+        if not isinstance(config, dict):
+            continue
+        has_sample_pages = isinstance(config.get("pages"), list)
+        if sample_key not in required_keys and not has_sample_pages and not incremental_enabled(config):
+            continue
+        checks.extend(
+            validate_adapter_sync_strategy_contract(
+                sample_key=sample_key,
+                config=config,
+                required=sample_key in required_keys,
+            )
+        )
+
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def validate_adapter_sync_strategy_contract(
+    *,
+    sample_key: str,
+    config: dict[str, Any],
+    required: bool,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    requires_sync_strategy = required and sample_key in SYNC_STRATEGY_REQUIRED_SAMPLE_KEYS
+    pages = configured_page_samples(config)
+    records_path = str(config.get("records_path") or "records").strip() or "records"
+    page_records = [page_records_for_config(page, records_path) for page in pages]
+    pages_with_unresolved_records = [
+        index for index, page in enumerate(pages, start=1) if not isinstance(page_records_raw(page, records_path), list)
+    ]
+
+    if requires_sync_strategy or pages:
+        checks.append(
+            pack_contract_check(
+                code="adapter.pagination.pages",
+                status="passed" if pages else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} provides page-shaped samples for sync strategy validation"
+                    if pages
+                    else f"{sample_key} must include page-shaped samples for sync strategy validation"
+                ),
+                evidence={"page_count": len(pages), "required": requires_sync_strategy},
+            )
+        )
+        checks.append(
+            pack_contract_check(
+                code="adapter.pagination.records_path",
+                status="passed" if pages and not pages_with_unresolved_records else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} records_path resolves on every sample page"
+                    if pages and not pages_with_unresolved_records
+                    else f"{sample_key} records_path must resolve to a list on every sample page"
+                ),
+                evidence={
+                    "records_path": records_path,
+                    "page_record_counts": [len(records) for records in page_records],
+                    "unresolved_pages": pages_with_unresolved_records,
+                },
+            )
+        )
+
+    pagination_path_key, pagination_path = first_configured_path(config, PAGINATION_MARKER_PATH_KEYS)
+    pagination_markers = [get_path(page, pagination_path) if pagination_path else None for page in pages]
+    pagination_marker_count = sum(1 for value in pagination_markers if pagination_marker_present(value))
+    has_terminal_page = bool(pages) and any(not pagination_marker_present(value) for value in pagination_markers)
+    if requires_sync_strategy or len(pages) > 1:
+        checks.append(
+            pack_contract_check(
+                code="adapter.pagination.next_marker",
+                status="passed" if len(pages) <= 1 or (pagination_path and pagination_marker_count > 0) else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} sample pages expose a next-page marker"
+                    if len(pages) <= 1 or (pagination_path and pagination_marker_count > 0)
+                    else f"{sample_key} multi-page samples must configure a next-page marker path"
+                ),
+                evidence={
+                    "path_key": pagination_path_key,
+                    "path": pagination_path,
+                    "next_marker_count": pagination_marker_count,
+                    "page_count": len(pages),
+                },
+            )
+        )
+        checks.append(
+            pack_contract_check(
+                code="adapter.pagination.terminates",
+                status="passed" if has_terminal_page else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} sample pagination includes a terminal page"
+                    if has_terminal_page
+                    else f"{sample_key} sample pagination must include a terminal page with no next marker"
+                ),
+                evidence={
+                    "path_key": pagination_path_key,
+                    "path": pagination_path,
+                    "markers": [str(value) for value in pagination_markers[:10]],
+                },
+            )
+        )
+
+    incremental = incremental_enabled(config)
+    if requires_sync_strategy:
+        checks.append(
+            pack_contract_check(
+                code="adapter.incremental.enabled",
+                status="passed" if incremental else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} enables incremental sync"
+                    if incremental
+                    else f"{sample_key} must enable incremental sync before customer go-live"
+                ),
+                evidence={
+                    "incremental": config.get("incremental"),
+                    "incremental_sync": config.get("incremental_sync"),
+                },
+            )
+        )
+    if incremental:
+        cursor_param = str(config.get("incremental_cursor_param") or config.get("since_param") or "").strip()
+        response_cursor_key, response_cursor_path = first_configured_path(config, INCREMENTAL_RESPONSE_CURSOR_PATH_KEYS)
+        record_cursor_key, record_cursor_path = first_configured_path(config, INCREMENTAL_RECORD_CURSOR_PATH_KEYS)
+        response_cursor_values = [
+            get_path(page, response_cursor_path)
+            for page in pages
+            if response_cursor_path and present(get_path(page, response_cursor_path))
+        ]
+        record_cursor_values = [
+            get_path(record, record_cursor_path)
+            for record in configured_record_samples(config)
+            if record_cursor_path and present(get_path(record, record_cursor_path))
+        ]
+        checks.append(
+            pack_contract_check(
+                code="adapter.incremental.cursor_param",
+                status="passed" if cursor_param else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} declares the incremental request cursor parameter"
+                    if cursor_param
+                    else f"{sample_key} must declare incremental_cursor_param or since_param"
+                ),
+                evidence={"cursor_param": cursor_param or None},
+            )
+        )
+        checks.append(
+            pack_contract_check(
+                code="adapter.incremental.cursor_source",
+                status="passed" if response_cursor_values or record_cursor_values else "failed",
+                sample_key=sample_key,
+                message=(
+                    f"{sample_key} sample data exposes the next incremental cursor"
+                    if response_cursor_values or record_cursor_values
+                    else f"{sample_key} must expose a response-level or record-level next incremental cursor"
+                ),
+                evidence={
+                    "response_cursor_path_key": response_cursor_key,
+                    "response_cursor_path": response_cursor_path,
+                    "response_cursor_count": len(response_cursor_values),
+                    "record_cursor_path_key": record_cursor_key,
+                    "record_cursor_path": record_cursor_path,
+                    "record_cursor_count": len(record_cursor_values),
+                    "sample_values": [str(value) for value in (response_cursor_values or record_cursor_values)[:5]],
+                },
+            )
+        )
+    return checks
+
+
 def validate_business_flow_contract(pack: dict[str, Any], *, required_system_types: list[str]) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     required_keys = set(required_sample_keys(required_system_types))
@@ -877,9 +1077,7 @@ def configured_record_samples(config: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(page, list):
                 records.extend(record for record in page if isinstance(record, dict))
             elif isinstance(page, dict):
-                page_records = get_path(page, records_path)
-                if page_records is None and records_path == "records":
-                    page_records = page.get("items")
+                page_records = page_records_raw(page, records_path)
                 if isinstance(page_records, list):
                     records.extend(record for record in page_records if isinstance(record, dict))
         return records
@@ -887,6 +1085,43 @@ def configured_record_samples(config: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(raw_records, list):
         records.extend(record for record in raw_records if isinstance(record, dict))
     return records
+
+
+def configured_page_samples(config: dict[str, Any]) -> list[dict[str, Any]]:
+    pages = config.get("pages")
+    if not isinstance(pages, list):
+        return []
+    return [page for page in pages if isinstance(page, dict)]
+
+
+def page_records_raw(page: dict[str, Any], records_path: str) -> Any:
+    page_records = get_path(page, records_path)
+    if page_records is None and records_path == "records":
+        page_records = page.get("items")
+    return page_records
+
+
+def page_records_for_config(page: dict[str, Any], records_path: str) -> list[dict[str, Any]]:
+    page_records = page_records_raw(page, records_path)
+    if not isinstance(page_records, list):
+        return []
+    return [record for record in page_records if isinstance(record, dict)]
+
+
+def first_configured_path(config: dict[str, Any], keys: tuple[str, ...]) -> tuple[str | None, str | None]:
+    for key in keys:
+        path = str(config.get(key) or "").strip()
+        if path:
+            return key, path
+    return None, None
+
+
+def incremental_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("incremental") or config.get("incremental_sync"))
+
+
+def pagination_marker_present(value: Any) -> bool:
+    return value is not None and value is not False and str(value).strip() != ""
 
 
 def get_path(record: dict[str, Any], path: str) -> Any:
@@ -1171,10 +1406,13 @@ def build_summary(report: dict[str, Any], required_system_types: list[str]) -> d
     adapters = report.get("adapters") or []
     readiness = report.get("readiness") or {}
     pack_contract = report.get("pack_contract") or {}
+    sync_strategy_contract = report.get("sync_strategy_contract") or {}
     business_flow_contract = report.get("business_flow_contract") or {}
     adapter_failed_count = sum(1 for item in adapters if item.get("status") != "passed")
     pack_contract_failed_count = int(pack_contract.get("failed_count") or 0)
     pack_contract_warning_count = int(pack_contract.get("warning_count") or 0)
+    sync_strategy_failed_count = int(sync_strategy_contract.get("failed_count") or 0)
+    sync_strategy_warning_count = int(sync_strategy_contract.get("warning_count") or 0)
     business_flow_failed_count = int(business_flow_contract.get("failed_count") or 0)
     business_flow_warning_count = int(business_flow_contract.get("warning_count") or 0)
     error_count = len(report.get("errors") or [])
@@ -1182,6 +1420,7 @@ def build_summary(report: dict[str, Any], required_system_types: list[str]) -> d
     failed_count = (
         error_count
         + pack_contract_failed_count
+        + sync_strategy_failed_count
         + business_flow_failed_count
         + adapter_failed_count
         + readiness_failed_count
@@ -1191,6 +1430,9 @@ def build_summary(report: dict[str, Any], required_system_types: list[str]) -> d
         "pack_contract_status": pack_contract.get("status"),
         "pack_contract_failed_count": pack_contract_failed_count,
         "pack_contract_warning_count": pack_contract_warning_count,
+        "sync_strategy_status": sync_strategy_contract.get("status"),
+        "sync_strategy_failed_count": sync_strategy_failed_count,
+        "sync_strategy_warning_count": sync_strategy_warning_count,
         "business_flow_status": business_flow_contract.get("status"),
         "business_flow_failed_count": business_flow_failed_count,
         "business_flow_warning_count": business_flow_warning_count,

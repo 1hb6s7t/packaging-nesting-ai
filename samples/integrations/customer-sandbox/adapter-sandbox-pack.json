@@ -28,6 +28,11 @@
       "mode": "mock",
       "dry_run": true,
       "records_path": "data.orders",
+      "next_page_path": "pagination.next_page",
+      "max_pages": 2,
+      "incremental": true,
+      "incremental_cursor_param": "updated_after",
+      "incremental_cursor_path": "sync.next_cursor",
       "status_path": "state",
       "status_dictionary": {
         "READY_TO_RUN": "ready",
@@ -70,6 +75,23 @@
                 "due": "2026-07-01"
               }
             ]
+          },
+          "pagination": {
+            "next_page": 2
+          },
+          "sync": {
+            "next_cursor": "2026-06-29T10:00:00Z"
+          }
+        },
+        {
+          "data": {
+            "orders": []
+          },
+          "pagination": {
+            "next_page": null
+          },
+          "sync": {
+            "next_cursor": "2026-06-29T10:00:00Z"
           }
         }
       ]
@@ -82,6 +104,11 @@
       "mode": "mock",
       "dry_run": true,
       "records_path": "data.jobs",
+      "next_page_path": "pagination.next_page",
+      "max_pages": 2,
+      "incremental": true,
+      "incremental_cursor_param": "since",
+      "incremental_cursor_path": "sync.cursor",
       "domain_target": "production_schedule",
       "external_id_path": "workOrder",
       "status_path": "state",
@@ -120,6 +147,23 @@
                 "qty": 1200
               }
             ]
+          },
+          "pagination": {
+            "next_page": 2
+          },
+          "sync": {
+            "cursor": "2026-06-29T11:00:00Z"
+          }
+        },
+        {
+          "data": {
+            "jobs": []
+          },
+          "pagination": {
+            "next_page": null
+          },
+          "sync": {
+            "cursor": "2026-06-29T11:00:00Z"
           }
         }
       ]

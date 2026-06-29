@@ -30,9 +30,12 @@ def test_sample_pack_audit_passes_with_no_readiness_blockers() -> None:
     assert report["status"] == "passed"
     assert report["pack_contract"]["status"] == "passed"
     assert report["pack_contract"]["failed_count"] == 0
+    assert report["sync_strategy_contract"]["status"] == "passed"
+    assert report["sync_strategy_contract"]["failed_count"] == 0
     assert report["business_flow_contract"]["status"] == "passed"
     assert report["business_flow_contract"]["failed_count"] == 0
     assert report["summary"]["pack_contract_status"] == "passed"
+    assert report["summary"]["sync_strategy_status"] == "passed"
     assert report["summary"]["business_flow_status"] == "passed"
     assert report["summary"]["adapter_count"] == 4
     assert report["summary"]["adapter_passed_count"] == 4
@@ -41,6 +44,42 @@ def test_sample_pack_audit_passes_with_no_readiness_blockers() -> None:
     assert report["readiness"]["status"] in {"ready", "warning"}
     assert all("config" not in adapter for adapter in report["adapters"])
     assert {adapter["system_type"] for adapter in report["adapters"]} == {"crm", "mes", "erp"}
+
+
+def test_audit_fails_when_crm_incremental_cursor_source_is_missing(tmp_path: Path) -> None:
+    module = load_customer_sandbox_audit_module()
+    pack = json.loads(SAMPLE_PACK_PATH.read_text(encoding="utf-8"))
+    broken_pack = copy.deepcopy(pack)
+    broken_pack["crm"]["config"].pop("incremental_cursor_path")
+    pack_path = tmp_path / "broken-crm-cursor-pack.json"
+    pack_path.write_text(json.dumps(broken_pack), encoding="utf-8")
+
+    report = module.build_customer_sandbox_audit_report(pack_path)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["sync_strategy_failed_count"] == 1
+    assert report["summary"]["adapter_count"] == 0
+    failed_check = report["sync_strategy_contract"]["failed_checks"][0]
+    assert failed_check["code"] == "adapter.incremental.cursor_source"
+    assert failed_check["sample_key"] == "crm"
+
+
+def test_audit_fails_when_mes_pagination_does_not_terminate(tmp_path: Path) -> None:
+    module = load_customer_sandbox_audit_module()
+    pack = json.loads(SAMPLE_PACK_PATH.read_text(encoding="utf-8"))
+    broken_pack = copy.deepcopy(pack)
+    broken_pack["mes"]["config"]["pages"][1]["pagination"]["next_page"] = 3
+    pack_path = tmp_path / "broken-mes-pagination-pack.json"
+    pack_path.write_text(json.dumps(broken_pack), encoding="utf-8")
+
+    report = module.build_customer_sandbox_audit_report(pack_path)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["sync_strategy_failed_count"] == 1
+    assert report["summary"]["adapter_count"] == 0
+    failed_check = report["sync_strategy_contract"]["failed_checks"][0]
+    assert failed_check["code"] == "adapter.pagination.terminates"
+    assert failed_check["sample_key"] == "mes"
 
 
 def test_audit_fails_when_mes_order_does_not_link_to_crm(tmp_path: Path) -> None:
