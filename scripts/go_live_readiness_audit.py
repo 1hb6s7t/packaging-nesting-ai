@@ -191,18 +191,36 @@ def validate_artifact_policy_contracts(payload: dict[str, Any]) -> list[dict[str
     checks: list[dict[str, Any]] = []
     for artifact_name, display_name in POLICY_CONTRACT_ARTIFACTS.items():
         artifact = artifacts.get(artifact_name)
-        summary = artifact.get("summary") if isinstance(artifact, dict) and isinstance(artifact.get("summary"), dict) else {}
+        summary = artifact_policy_summary(artifact)
         policy_status = summary.get("policy_contract_status")
         policy_failed_count = summary.get("policy_contract_failed_count")
         errors: list[str] = []
         if artifact is None:
-            errors.append(f"{display_name} artifact is missing")
+            checks.append(check_result(f"{artifact_name}:policy_contract", errors, summary=dict(summary)))
+            continue
+        if artifact.get("status") != "passed":
+            checks.append(check_result(f"{artifact_name}:policy_contract", errors, summary=dict(summary)))
+            continue
+        if not summary:
+            errors.append(f"{display_name} policy contract summary is missing")
         elif policy_status not in {"passed", "warning"}:
             errors.append(f"{display_name} policy contract must be passed or warning, got {policy_status or '<missing>'}")
         if policy_failed_count not in {0, None}:
             errors.append(f"{display_name} policy contract has failed checks")
         checks.append(check_result(f"{artifact_name}:policy_contract", errors, summary=dict(summary)))
     return checks
+
+
+def artifact_policy_summary(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(artifact, dict):
+        return {}
+    summary = artifact.get("summary")
+    if not isinstance(summary, dict):
+        return {}
+    evidence_summary = summary.get("evidence_summary")
+    if isinstance(evidence_summary, dict):
+        return dict(evidence_summary)
+    return dict(summary)
 
 
 def attach_policy_contract(report: dict[str, Any]) -> dict[str, Any]:

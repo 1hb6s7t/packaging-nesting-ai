@@ -238,10 +238,26 @@ def complete_handoff_manifest() -> dict:
         artifact("release_preflight_verification", "passed"),
         artifact("release_evidence_manifest", "passed"),
         artifact("release_evidence_verification", "passed"),
-        artifact("release_evidence_artifact:deployment_compose_audit", "passed", summary=policy_summary("warning", warnings=1)),
-        artifact("release_evidence_artifact:repository_hygiene_audit", "passed", summary=policy_summary()),
-        artifact("release_evidence_artifact:production_env_audit", "passed", summary=policy_summary()),
-        artifact("release_evidence_artifact:external_acceptance_audit", "passed", summary=policy_summary()),
+        artifact(
+            "release_evidence_artifact:deployment_compose_audit",
+            "passed",
+            summary=evidence_summary("deployment_compose_audit", policy_summary("warning", warnings=1)),
+        ),
+        artifact(
+            "release_evidence_artifact:repository_hygiene_audit",
+            "passed",
+            summary=evidence_summary("repository_hygiene_audit", policy_summary()),
+        ),
+        artifact(
+            "release_evidence_artifact:production_env_audit",
+            "passed",
+            summary=evidence_summary("production_env_audit", policy_summary()),
+        ),
+        artifact(
+            "release_evidence_artifact:external_acceptance_audit",
+            "passed",
+            summary=evidence_summary("external_acceptance_audit", policy_summary()),
+        ),
         artifact(
             "dependency_inventory",
             "passed",
@@ -305,6 +321,15 @@ def policy_summary(status: str = "passed", *, failed: int = 0, warnings: int = 0
         "policy_contract_status": status,
         "policy_contract_failed_count": failed,
         "policy_contract_warning_count": warnings,
+    }
+
+
+def evidence_summary(name: str, summary: dict) -> dict:
+    return {
+        "evidence_artifact_name": name,
+        "evidence_artifact_status": "passed",
+        "evidence_artifact_required": True,
+        "evidence_summary": summary,
     }
 
 
