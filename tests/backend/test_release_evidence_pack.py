@@ -87,6 +87,8 @@ def test_release_evidence_pack_includes_production_env_when_provided(tmp_path: P
     assert by_name["dependency_review_audit"]["status"] in {"passed", "skipped"}
     production_report = json.loads((output_dir / "production-env-audit.json").read_text(encoding="utf-8"))
     assert production_report["status"] == "passed"
+    assert production_report["summary"]["policy_contract_status"] == "passed"
+    assert production_report["summary"]["policy_contract_failed_count"] == 0
     assert production_report["sensitive_scan"]["status"] == "passed"
     serialized = json.dumps(production_report, ensure_ascii=False)
     assert "StrongProduction123!" not in serialized

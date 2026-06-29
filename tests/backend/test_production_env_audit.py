@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
@@ -135,6 +136,10 @@ def test_valid_production_env_passes_and_redacts_sensitive_values(tmp_path: Path
     assert report["status"] == "passed"
     assert report["error_count"] == 0
     assert report["missing_recommended_keys"] == []
+    assert report["policy_contract"]["status"] == "passed"
+    assert report["policy_contract"]["failed_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
     assert report["redacted_settings"]["DATABASE_URL"] == (
         "postgresql+psycopg://app:***@db:5432/packaging"
     )
@@ -159,6 +164,7 @@ def test_production_env_example_has_required_keys_but_fails_until_placeholders_a
     assert report["is_production"] is True
     assert report["missing_recommended_keys"] == []
     assert report["status"] == "failed"
+    assert report["policy_contract"]["status"] == "failed"
     assert any("DATABASE_URL contains a placeholder value" in error for error in report["errors"])
     assert any("AUTH_SECRET_KEY contains a placeholder value" in error for error in report["errors"])
     assert any("MINIO_SECRET_KEY contains a placeholder value" in error for error in report["errors"])
@@ -210,6 +216,7 @@ def test_production_env_audit_rejects_placeholder_values(tmp_path: Path) -> None
 
     assert report["status"] == "failed"
     assert "AUTH_SECRET_KEY contains a placeholder value and must be replaced before production audit" in report["errors"]
+    assert any(check["code"] == "placeholder.values" for check in report["policy_contract"]["failed_checks"])
 
 
 def test_production_env_audit_rejects_example_template_domains(tmp_path: Path) -> None:
@@ -230,6 +237,62 @@ def test_production_env_audit_rejects_example_template_domains(tmp_path: Path) -
     assert "DATABASE_URL contains an example/template domain and must be replaced before production audit" in report["errors"]
     assert "DEFAULT_ADMIN_EMAIL contains an example/template domain and must be replaced before production audit" in report["errors"]
     assert "MINIO_ENDPOINT contains an example/template domain and must be replaced before production audit" in report["errors"]
+    assert any(check["code"] == "template.domains" for check in report["policy_contract"]["failed_checks"])
+
+
+def test_production_env_policy_contract_blocks_missing_explicit_hsts_key(tmp_path: Path) -> None:
+    module = load_production_env_audit_module()
+    env_file = tmp_path / ".env.production"
+    write_valid_env(env_file)
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace("SECURITY_HSTS_ENABLED=true\n", ""),
+        encoding="utf-8",
+    )
+
+    report = module.build_env_audit_report(env_file)
+
+    assert report["status"] == "failed"
+    assert report["error_count"] == 0
+    assert report["missing_recommended_keys"] == ["SECURITY_HSTS_ENABLED"]
+    failed_codes = {check["code"] for check in report["policy_contract"]["failed_checks"]}
+    assert "env.recommended_keys" in failed_codes
+    assert "security.headers" in failed_codes
+
+
+def test_production_env_policy_contract_blocks_disabled_security_headers(tmp_path: Path) -> None:
+    module = load_production_env_audit_module()
+    env_file = tmp_path / ".env.production"
+    write_valid_env(env_file)
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace("SECURITY_HEADERS_ENABLED=true", "SECURITY_HEADERS_ENABLED=false"),
+        encoding="utf-8",
+    )
+
+    report = module.build_env_audit_report(env_file)
+
+    assert report["status"] == "failed"
+    assert "SECURITY_HEADERS_ENABLED must not be disabled in production" in report["errors"]
+    assert any(check["code"] == "security.headers" for check in report["policy_contract"]["failed_checks"])
+
+
+def test_production_env_policy_contract_fails_unredacted_report_snapshot(tmp_path: Path) -> None:
+    module = load_production_env_audit_module()
+    env_file = tmp_path / ".env.production"
+    write_valid_env(env_file)
+    report = module.build_env_audit_report(env_file)
+    parse_result = module.parse_env_file(env_file)
+    settings = module.build_settings_from_env_values(parse_result.values)
+    broken_report = copy.deepcopy(report)
+    broken_report["redacted_settings"]["AUTH_SECRET_KEY"] = "raw-auth-secret"
+
+    policy = module.validate_production_env_policy_contract(
+        broken_report,
+        env_values=parse_result.values,
+        settings=settings,
+    )
+
+    assert policy["status"] == "failed"
+    assert any(check["code"] == "report.redaction" for check in policy["failed_checks"])
 
 
 def test_unsafe_production_env_fails_with_existing_policy_errors(tmp_path: Path) -> None:
@@ -256,6 +319,7 @@ def test_non_production_env_file_fails_audit(tmp_path: Path) -> None:
 
     assert report["status"] == "failed"
     assert "APP_ENV must be prod or production for production environment audit" in report["errors"]
+    assert any(check["code"] == "env.production_mode" for check in report["policy_contract"]["failed_checks"])
 
 
 def test_cli_writes_report_and_returns_nonzero_on_failure(tmp_path: Path) -> None:
