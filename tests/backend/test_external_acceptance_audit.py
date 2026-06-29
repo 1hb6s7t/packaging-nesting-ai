@@ -30,6 +30,10 @@ def test_external_acceptance_audit_accepts_complete_manifest(tmp_path: Path) -> 
     )
 
     assert report["status"] == "passed"
+    assert report["policy_contract"]["status"] == "passed"
+    assert report["policy_contract"]["failed_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
     assert report["summary"]["required_area_count"] == 5
     assert report["summary"]["passed_area_count"] == 5
     assert report["summary"]["verified_evidence_file_count"] == 5
@@ -45,8 +49,12 @@ def test_external_acceptance_audit_can_skip_or_fail_when_file_is_missing() -> No
     failed = module.build_external_acceptance_audit(require_acceptance_file=True)
 
     assert skipped["status"] == "skipped"
+    assert skipped["policy_contract"]["status"] == "skipped"
+    assert skipped["summary"]["policy_contract_status"] == "skipped"
     assert "external acceptance file was not provided" in skipped["warnings"]
     assert failed["status"] == "failed"
+    assert failed["policy_contract"]["status"] == "failed"
+    assert failed["summary"]["policy_contract_failed_count"] >= 1
     assert "external acceptance file is required" in failed["errors"]
     assert failed["summary"]["missing_area_count"] == 5
 
@@ -68,7 +76,12 @@ def test_external_acceptance_audit_rejects_missing_area_pending_status_and_no_ev
     assert report["status"] == "failed"
     assert report["summary"]["missing_area_count"] == 1
     assert report["summary"]["invalid_area_count"] == 2
+    assert report["policy_contract"]["status"] == "failed"
     assert report["missing_areas"] == ["production_deployment"]
+    assert any(
+        check["code"] == "acceptance.area.coverage"
+        for check in report["policy_contract"]["failed_checks"]
+    )
     invalid_by_area = {item["area"]: item for item in report["invalid_areas"]}
     assert "status must be passed" in invalid_by_area["customer_integration_sandbox"]["errors"]
     assert "evidence_files must contain at least one file" in invalid_by_area["notification_channel_sandbox"]["errors"]
@@ -134,6 +147,8 @@ def test_external_acceptance_audit_detects_tampered_evidence_file(tmp_path: Path
 
     assert report["status"] == "failed"
     assert report["summary"]["failed_evidence_file_count"] == 1
+    assert report["policy_contract"]["status"] == "failed"
+    assert any(check["code"] == "evidence.integrity" for check in report["policy_contract"]["failed_checks"])
     assert report["failed_evidence_files"][0]["area"] == "customer_integration_sandbox"
     assert "evidence file size_bytes mismatch" in report["failed_evidence_files"][0]["errors"]
     assert "evidence file sha256 mismatch" in report["failed_evidence_files"][0]["errors"]
@@ -192,6 +207,7 @@ def test_external_acceptance_audit_template_and_cli(tmp_path: Path) -> None:
     )
     assert audit_exit_code == 1
     assert audit["status"] == "failed"
+    assert audit["policy_contract"]["status"] == "failed"
     assert audit["summary"]["invalid_area_count"] == 5
 
 
@@ -236,11 +252,40 @@ def test_external_acceptance_audit_refreshes_evidence_metadata(tmp_path: Path) -
     assert refresh_report["summary"]["updated_evidence_file_count"] == 5
     assert audit_exit_code == 0
     assert audit["status"] == "passed"
+    assert audit["policy_contract"]["status"] == "passed"
+    assert audit["summary"]["policy_contract_failed_count"] == 0
     for entry in refreshed["entries"]:
         for evidence in entry["evidence_files"]:
             evidence_path = tmp_path / evidence["path"]
             assert evidence["size_bytes"] == evidence_path.stat().st_size
             assert evidence["sha256"] == module.sha256_file(evidence_path)
+
+
+def test_external_acceptance_policy_contract_warns_for_unmatched_area(tmp_path: Path) -> None:
+    module = load_external_acceptance_audit_module()
+    manifest = valid_manifest(module, tmp_path)
+    manifest["entries"].append(
+        {
+            "area": "extra_customer_demo",
+            "status": "passed",
+            "summary": "extra evidence",
+            "ticket": "REL-EXT-1",
+            "evidence_files": [],
+        }
+    )
+    acceptance_file = tmp_path / "external-acceptance.json"
+    acceptance_file.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    report = module.build_external_acceptance_audit(
+        acceptance_file=acceptance_file,
+        require_acceptance_file=True,
+    )
+
+    assert report["status"] == "passed"
+    assert report["policy_contract"]["status"] == "warning"
+    assert report["summary"]["policy_contract_warning_count"] == 1
+    warning_check = next(check for check in report["policy_contract"]["warning_checks"] if check["code"] == "acceptance.area.scope")
+    assert warning_check["evidence"]["unmatched_area_count"] == 1
 
 
 def test_external_acceptance_audit_refresh_rejects_unsafe_evidence_path(tmp_path: Path) -> None:

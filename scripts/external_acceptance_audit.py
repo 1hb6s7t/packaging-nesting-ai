@@ -192,9 +192,11 @@ def build_external_acceptance_audit(
         "generated_at": current_time.isoformat(),
         "status": "failed",
         "acceptance_file": str(resolved_acceptance_file) if resolved_acceptance_file else None,
+        "require_acceptance_file": require_acceptance_file,
         "base_dir": str(resolved_base_dir),
         "required_areas": list(REQUIRED_ACCEPTANCE_AREAS),
         "summary": empty_summary(),
+        "policy_contract": {},
         "errors": [],
         "warnings": [],
         "missing_areas": [],
@@ -209,22 +211,22 @@ def build_external_acceptance_audit(
             report["errors"].append("external acceptance file is required")
             report["missing_areas"] = list(REQUIRED_ACCEPTANCE_AREAS)
             report["summary"]["missing_area_count"] = len(REQUIRED_ACCEPTANCE_AREAS)
-            return report
+            return attach_policy_contract(report)
         report["status"] = "skipped"
         report["warnings"].append("external acceptance file was not provided")
-        return report
+        return attach_policy_contract(report)
 
     if not resolved_acceptance_file.is_file():
         report["errors"].append(f"external acceptance file does not exist: {resolved_acceptance_file}")
         report["missing_areas"] = list(REQUIRED_ACCEPTANCE_AREAS)
         report["summary"]["missing_area_count"] = len(REQUIRED_ACCEPTANCE_AREAS)
-        return report
+        return attach_policy_contract(report)
 
     try:
         payload = read_json(resolved_acceptance_file)
     except Exception as exc:
         report["errors"].append(f"external acceptance file could not be read: {exc}")
-        return report
+        return attach_policy_contract(report)
 
     document_errors = validate_acceptance_document(payload)
     placeholder_errors = placeholder_value_errors(payload)
@@ -286,7 +288,164 @@ def build_external_acceptance_audit(
         + len(report["failed_evidence_files"])
     )
     report["status"] = "passed" if blocking_count == 0 else "failed"
+    report = attach_policy_contract(report)
+    if int((report.get("policy_contract") or {}).get("failed_count") or 0):
+        report["status"] = "failed"
     return report
+
+
+def attach_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    policy_contract = validate_external_acceptance_policy_contract(report)
+    report["policy_contract"] = policy_contract
+    summary = report.get("summary")
+    if isinstance(summary, dict):
+        summary["policy_contract_status"] = policy_contract.get("status")
+        summary["policy_contract_failed_count"] = int(policy_contract.get("failed_count") or 0)
+        summary["policy_contract_warning_count"] = int(policy_contract.get("warning_count") or 0)
+    return report
+
+
+def validate_external_acceptance_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("status") == "skipped" and not report.get("require_acceptance_file"):
+        skipped_check = policy_check(
+            code="acceptance.optional",
+            status="skipped",
+            message="external acceptance file is optional and was not provided",
+            evidence={"require_acceptance_file": bool(report.get("require_acceptance_file"))},
+        )
+        return {
+            "status": "skipped",
+            "passed_count": 0,
+            "warning_count": 0,
+            "failed_count": 0,
+            "failed_checks": [],
+            "warning_checks": [],
+            "checks": [skipped_check],
+        }
+
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    required_areas = list(report.get("required_areas") or REQUIRED_ACCEPTANCE_AREAS)
+    missing_areas = list(report.get("missing_areas") or [])
+    invalid_areas = list(report.get("invalid_areas") or [])
+    unmatched_areas = list(report.get("unmatched_areas") or [])
+    verified_evidence_files = list(report.get("verified_evidence_files") or [])
+    failed_evidence_files = list(report.get("failed_evidence_files") or [])
+    checks = [
+        policy_check(
+            code="acceptance.file.present",
+            status="passed" if report.get("acceptance_file") and not any("file is required" in error for error in report.get("errors") or []) else "failed",
+            message="external acceptance manifest is present"
+            if report.get("acceptance_file") and not any("file is required" in error for error in report.get("errors") or [])
+            else "external acceptance manifest is required for this release gate",
+            evidence={
+                "acceptance_file": report.get("acceptance_file"),
+                "require_acceptance_file": bool(report.get("require_acceptance_file")),
+            },
+        ),
+        policy_check(
+            code="acceptance.document",
+            status="passed" if not report.get("errors") else "failed",
+            message="external acceptance document fields are complete and placeholder-free"
+            if not report.get("errors")
+            else "external acceptance document fields must be complete, timezone-aware, and placeholder-free",
+            evidence={"errors": report.get("errors") or []},
+        ),
+        policy_check(
+            code="acceptance.area.coverage",
+            status="passed"
+            if summary.get("required_area_count") == len(REQUIRED_ACCEPTANCE_AREAS)
+            and summary.get("passed_area_count") == len(REQUIRED_ACCEPTANCE_AREAS)
+            and not missing_areas
+            and not invalid_areas
+            else "failed",
+            message="all required external acceptance areas passed"
+            if summary.get("required_area_count") == len(REQUIRED_ACCEPTANCE_AREAS)
+            and summary.get("passed_area_count") == len(REQUIRED_ACCEPTANCE_AREAS)
+            and not missing_areas
+            and not invalid_areas
+            else "all required external acceptance areas must pass",
+            evidence={
+                "required_areas": required_areas,
+                "passed_area_count": summary.get("passed_area_count"),
+                "missing_areas": missing_areas,
+                "invalid_area_count": len(invalid_areas),
+            },
+        ),
+        policy_check(
+            code="acceptance.area.scope",
+            status="warning" if unmatched_areas else "passed",
+            message="external acceptance manifest only contains required areas"
+            if not unmatched_areas
+            else "external acceptance manifest contains non-required areas",
+            evidence={"unmatched_area_count": len(unmatched_areas), "unmatched_areas": unmatched_areas},
+        ),
+        policy_check(
+            code="evidence.integrity",
+            status="passed"
+            if summary.get("verified_evidence_file_count", 0) >= len(REQUIRED_ACCEPTANCE_AREAS)
+            and not failed_evidence_files
+            else "failed",
+            message="external acceptance evidence files pass size and SHA-256 checks"
+            if summary.get("verified_evidence_file_count", 0) >= len(REQUIRED_ACCEPTANCE_AREAS)
+            and not failed_evidence_files
+            else "external acceptance evidence files must pass size and SHA-256 checks",
+            evidence={
+                "verified_evidence_file_count": summary.get("verified_evidence_file_count"),
+                "failed_evidence_file_count": summary.get("failed_evidence_file_count"),
+                "failed_evidence_files": failed_evidence_files,
+            },
+        ),
+        policy_check(
+            code="evidence.metadata",
+            status="passed" if verified_evidence_metadata_complete(verified_evidence_files) else "failed",
+            message="external acceptance evidence metadata is complete"
+            if verified_evidence_metadata_complete(verified_evidence_files)
+            else "external acceptance evidence metadata must include relative path, size, SHA-256, and description",
+            evidence={"verified_evidence_file_count": len(verified_evidence_files)},
+        ),
+    ]
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def verified_evidence_metadata_complete(items: list[Any]) -> bool:
+    if len(items) < len(REQUIRED_ACCEPTANCE_AREAS):
+        return False
+    return all(
+        isinstance(item, dict)
+        and non_empty_string(item.get("relative_path"))
+        and isinstance(item.get("size_bytes"), int)
+        and item.get("size_bytes", 0) > 0
+        and is_sha256_hex(item.get("sha256"))
+        and non_empty_string(item.get("description"))
+        for item in items
+    )
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
 
 
 def empty_summary() -> dict[str, int]:
