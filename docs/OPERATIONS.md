@@ -40,7 +40,7 @@
 - AI 工具可以读取订单、图形、纸张规格，调用后端 Solver/Validator，比较方案并生成报告；`export_pdf`、`export_dxf`、`write_back_crm` 和 `create_nesting_job` 在 AI 边界内返回 `blocked`，生产导出、外部回写和拼版任务创建仍必须走原确认、审批、Adapter 和审计流程。
 - 审批请求、审批结果、后台任务失败/超时、生产异常告警和采购预警会写入 `notification`；`/notifications` 页面可按当前用户查看并标记已读，普通用户不会加载消息模板和收件组管理接口。
 - 消息模板通过 `/notifications` 页面或 `/api/notifications/templates` 维护，需要 `notifications:manage` 权限；前端只有具备该权限才显示模板和收件组管理页签。模板支持站内、webhook 和 SMTP 邮件通道，使用 `{field.path}` 占位符渲染上下文，不执行表达式或任意代码。Webhook 模板可在 `metadata` 中配置 `webhook_url`、`webhook_provider`、`webhook_message_type`、`signature_secret`、`signature_header`、`signature_timestamp_header`、`retry_count` 和 `dedupe_minutes`，用于真实通知网关的 payload 适配、签名认证、失败重试和噪声控制；邮件模板按模板接收权限和收件组解析活跃用户邮箱，并复用 `dedupe_minutes` 和 payload `dedupe_key` 控制重复投递。
-- 通知通道上线证据可从工程根目录运行 `python scripts\notification_channel_audit.py --pack samples\notifications\webhook-channel-pack.json --output artifacts\notification-channel-audit.json` 生成；脚本使用 mocked endpoint 和注入式邮件发送器验证通用 webhook、飞书/Lark、企业微信 payload、HMAC 签名、失败重试、`dedupe_key` 去重、SMTP 邮件收件人解析/主题/事件头/正文和关键事件覆盖率。
+- 通知通道上线证据可从工程根目录运行 `python scripts\notification_channel_audit.py --pack samples\notifications\webhook-channel-pack.json --output artifacts\notification-channel-audit.json` 生成；脚本先用 `policy_contract` 校验 `schema_version=1`、关键事件覆盖、模板渲染、目标、`dedupe_key`、`dedupe_minutes`、webhook HTTPS URL、`webhook_provider`、`retry_count`、generic HMAC 签名、飞书/Lark 平台关键词、企业微信 `key`/消息类型和邮件收件路由，再使用 mocked endpoint 和注入式邮件发送器验证通用 webhook、飞书/Lark、企业微信 payload、HMAC 签名、失败重试、去重、SMTP 邮件收件人解析/主题/事件头/正文和关键事件覆盖率。
 - 收件组通过 `/notifications` 页面或 `/api/notifications/recipient-groups` 维护，可组合直接用户 ID、权限编码和部门编码；部门编码按 `user_account.org_unit_code` 匹配，用于客户组织角色映射和真实收件组治理。
 - `/api/notifications/dispatch` 可按事件类型手动分发模板消息；站内模板按 `recipient_permission_code` 和 `recipient_group_id` 找接收人，未读消息超过 `escalation_after_minutes` 后可追加 `escalation_permission_code` 和 `escalation_group_id` 接收人；每次分发都会写入 `message_dispatch_log`。
 - Validator 按真实放置多边形检查出界、咬口冲突、重叠和最小间距；Geometry Engine 默认使用 Shapely 执行精确距离、包含、差集空白面积、offset 和自交修复，并保留无 Shapely 环境下的确定性回退。
@@ -95,7 +95,7 @@
 - 周期维护由 `MAINTENANCE_SCHEDULER_ENABLED=true` 开启，`MAINTENANCE_INTERVAL_MINUTES` 控制间隔，`MAINTENANCE_ARCHIVE_EXPIRED_EXPORTS`、`MAINTENANCE_CONVERSION_SLA_CHECK`、`MAINTENANCE_TASK_ALERT_CHECK` 分别控制归档、转换 SLA 和任务告警检查。每次周期触发都会创建 `maintenance.run` 类型 `work_task`，便于在运行监控页追踪结果。
 - 任务告警默认会向拥有 `audit:read` 权限的用户写入站内通知，并按 `TASK_ALERT_DEDUPE_MINUTES` 在冷却窗口内去重；如存在匹配告警 code 的站内消息模板，会使用模板渲染标题和正文。
 - 配置 `EXTERNAL_ALERT_WEBHOOK_URL` 后，任务告警会向外部 webhook 推送 `work_task.alert` JSON 事件；也可为具体事件创建 `webhook` 消息模板并在 `metadata.webhook_url` 指定目标。模板 webhook 支持 `webhook_provider=generic|feishu|lark|wecom|wechat_work`，其中飞书/Lark 使用文本消息 payload，企业微信默认使用 markdown payload；支持 `signature_secret` 生成 `X-Packaging-Signature` 和 `X-Packaging-Timestamp`，支持 `retry_count` 即时重试，支持 `dedupe_minutes` 结合 payload `dedupe_key` 在冷却窗口内跳过重复推送；未配置 endpoint 时接口会返回 `external_push.status=skipped` 或分发日志 `status=skipped`。创建 `email` 消息模板并配置 `SMTP_HOST`、`SMTP_FROM_EMAIL` 等 SMTP 环境变量后，系统会向解析出的活跃用户邮箱发送同一事件正文。
-- 正式切入客户通知网关前，应先保存 `scripts/notification_channel_audit.py` 的 JSON 报告，再在客户沙箱中补充平台响应码、关键词/签名规则、SMTP 投递策略和消息展示效果验收。
+- 正式切入客户通知网关前，应先保存 `scripts/notification_channel_audit.py` 的 JSON 报告，确认 `summary.policy_contract_status=passed`、`coverage_status=passed` 和 `failed_count=0`，再在客户沙箱中补充平台响应码、关键词/签名规则、SMTP 投递策略和消息展示效果验收。
 - `/api/tasks/{task_id}/cancel` 和 `/api/tasks/{task_id}/retry` 需要 `tasks:manage` 权限；取消 running 任务为协作式取消，求解、Benchmark 和导出会在关键阶段间检查取消请求，尽量避免在取消后继续写入方案、Benchmark Run 或生产导出。
 
 ## 数据库迁移

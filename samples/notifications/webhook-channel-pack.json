@@ -26,18 +26,20 @@
         "signature_secret": "audit-webhook-secret",
         "signature_header": "X-Audit-Signature",
         "signature_timestamp_header": "X-Audit-Timestamp",
+        "dedupe_minutes": 30,
         "retry_count": 1
       },
       "audit_response_sequence": [503, 202],
       "expected_provider": "generic",
       "expect_signature": true,
+      "expect_dedupe": true,
       "expected_attempt_count": 2
     },
     {
       "name": "Task Stale Running Feishu Webhook",
       "event_type": "work_task.stale_running",
       "channel": "webhook",
-      "title_template": "Stale task alert {job_id}",
+      "title_template": "PACKAGING-AI Stale task alert {job_id}",
       "message_template": "Stale running tasks: {metrics.stale_running}",
       "target_type": "work_task_metrics",
       "target_id": "work-task-stale-running",
@@ -53,10 +55,13 @@
       "metadata": {
         "webhook_provider": "feishu",
         "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/audit",
-        "retry_count": 0
+        "platform_keyword": "PACKAGING-AI",
+        "dedupe_minutes": 30,
+        "retry_count": 1
       },
       "audit_response_sequence": [200],
       "expected_provider": "feishu",
+      "expect_dedupe": true,
       "expected_attempt_count": 1
     },
     {
@@ -81,10 +86,12 @@
         "webhook_provider": "wecom",
         "webhook_message_type": "markdown",
         "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=audit",
-        "retry_count": 0
+        "dedupe_minutes": 30,
+        "retry_count": 1
       },
       "audit_response_sequence": [200],
       "expected_provider": "wecom",
+      "expect_dedupe": true,
       "expected_attempt_count": 1
     },
     {
@@ -108,12 +115,16 @@
       "metadata": {
         "webhook_provider": "generic",
         "webhook_url": "https://alerts.example.test/schedule",
+        "signature_secret": "audit-schedule-secret",
+        "signature_header": "X-Audit-Schedule-Signature",
+        "signature_timestamp_header": "X-Audit-Schedule-Timestamp",
         "dedupe_minutes": 30,
-        "retry_count": 0
+        "retry_count": 1
       },
       "audit_response_sequence": [204],
       "expected_provider": "generic",
       "expected_attempt_count": 1,
+      "expect_signature": true,
       "expect_dedupe": true
     },
     {
@@ -138,10 +149,12 @@
         "webhook_provider": "wecom",
         "webhook_message_type": "text",
         "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=audit-delivery",
-        "retry_count": 0
+        "dedupe_minutes": 30,
+        "retry_count": 1
       },
       "audit_response_sequence": [200],
       "expected_provider": "wecom",
+      "expect_dedupe": true,
       "expected_attempt_count": 1
     },
     {

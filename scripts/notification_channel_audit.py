@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from sqlalchemy import create_engine
@@ -28,8 +29,13 @@ from app.db import models as dbm  # noqa: F401
 from app.domain import schemas
 from app.services import repository
 from app.services.adapters import REQUIRED_INTEGRATION_NOTIFICATION_EVENTS
-from app.services.messaging import dispatch_message_event
+from app.services.messaging import dispatch_message_event, render_message_template
 from app.services.security import hash_password
+
+
+PACK_SCHEMA_VERSION = 1
+SUPPORTED_CHANNELS = {"webhook", "email"}
+SUPPORTED_WEBHOOK_PROVIDERS = {"generic", "feishu", "lark", "wecom", "wechat_work", "enterprise_wechat"}
 
 
 def load_pack(pack_path: Path) -> dict[str, Any]:
@@ -45,6 +51,7 @@ def build_notification_channel_audit_report(pack_path: Path = DEFAULT_PACK_PATH)
         "required_events": list(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS),
         "status": "failed",
         "summary": {},
+        "policy_contract": {},
         "templates": [],
         "coverage": {},
         "errors": [],
@@ -62,6 +69,10 @@ def build_notification_channel_audit_report(pack_path: Path = DEFAULT_PACK_PATH)
     template_specs = pack.get("templates")
     if not isinstance(template_specs, list) or not template_specs:
         report["errors"].append("pack does not contain any notification templates")
+        report["summary"] = build_summary(report)
+        return report
+    report["policy_contract"] = validate_policy_contract(pack)
+    if report["policy_contract"]["failed_count"]:
         report["summary"] = build_summary(report)
         return report
 
@@ -208,6 +219,330 @@ def audit_template(db, spec: dict[str, Any]) -> dict[str, Any]:
         template_report["errors"].append(str(exc))
     template_report["status"] = "passed" if template_passed(template_report) else "failed"
     return template_report
+
+
+def validate_policy_contract(pack: dict[str, Any]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    schema_version = pack.get("schema_version")
+    checks.append(
+        policy_check(
+            code="schema.version",
+            status="passed" if schema_version == PACK_SCHEMA_VERSION else "failed",
+            message=(
+                f"schema_version {PACK_SCHEMA_VERSION} is declared"
+                if schema_version == PACK_SCHEMA_VERSION
+                else f"schema_version must be {PACK_SCHEMA_VERSION}"
+            ),
+            evidence={"schema_version": schema_version, "supported": [PACK_SCHEMA_VERSION]},
+        )
+    )
+
+    template_specs = pack.get("templates") if isinstance(pack.get("templates"), list) else []
+    event_types = [str(item.get("event_type") or "").strip() for item in template_specs if isinstance(item, dict)]
+    duplicate_events = sorted({event_type for event_type in event_types if event_type and event_types.count(event_type) > 1})
+    names = [str(item.get("name") or "").strip() for item in template_specs if isinstance(item, dict)]
+    duplicate_names = sorted({name for name in names if name and names.count(name) > 1})
+    checks.extend(
+        [
+            policy_check(
+                code="template.name.unique",
+                status="passed" if not duplicate_names else "failed",
+                message="template names are unique" if not duplicate_names else "template names must be unique",
+                evidence={"duplicates": duplicate_names},
+            ),
+            policy_check(
+                code="template.event.coverage",
+                status="passed" if set(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS).issubset(set(event_types)) else "failed",
+                message=(
+                    "templates cover required integration notification events"
+                    if set(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS).issubset(set(event_types))
+                    else "templates must cover all required integration notification events"
+                ),
+                evidence={
+                    "required_events": list(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS),
+                    "missing_events": sorted(set(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS) - set(event_types)),
+                },
+            ),
+        ]
+    )
+    if duplicate_events:
+        duplicated_required_events = sorted(set(duplicate_events) & set(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS))
+        duplicated_non_required_events = sorted(set(duplicate_events) - set(REQUIRED_INTEGRATION_NOTIFICATION_EVENTS))
+        checks.append(
+            policy_check(
+                code="template.event.duplicate",
+                status="warning" if duplicated_non_required_events else "passed",
+                message=(
+                    "required event templates are intentionally allowed to fan out across channels"
+                    if not duplicated_non_required_events
+                    else "non-required event templates are duplicated"
+                ),
+                evidence={
+                    "duplicates": duplicate_events,
+                    "duplicated_required_events": duplicated_required_events,
+                    "duplicated_non_required_events": duplicated_non_required_events,
+                },
+            )
+        )
+
+    for spec in template_specs:
+        if not isinstance(spec, dict):
+            checks.append(
+                policy_check(
+                    code="template.entry",
+                    status="failed",
+                    message="template entries must be objects",
+                )
+            )
+            continue
+        checks.extend(validate_template_policy(spec))
+
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def validate_template_policy(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    name = str(spec.get("name") or "").strip()
+    event_type = str(spec.get("event_type") or "").strip()
+    channel = str(spec.get("channel") or "").strip().lower()
+    payload = spec.get("payload") if isinstance(spec.get("payload"), dict) else {}
+    metadata = spec.get("metadata") if isinstance(spec.get("metadata"), dict) else {}
+    rendered_title = render_message_template(str(spec.get("title_template") or ""), dict(spec.get("context") or {}))
+    rendered_message = render_message_template(str(spec.get("message_template") or ""), dict(spec.get("context") or {}))
+    checks.extend(
+        [
+            policy_check(
+                code="template.identity",
+                status="passed" if name and event_type else "failed",
+                template=name or event_type or None,
+                message="template declares name and event_type" if name and event_type else "template must declare name and event_type",
+                evidence={"name": name or None, "event_type": event_type or None},
+            ),
+            policy_check(
+                code="template.channel",
+                status="passed" if channel in SUPPORTED_CHANNELS else "failed",
+                template=name or event_type or None,
+                message=f"template channel {channel} is supported" if channel in SUPPORTED_CHANNELS else "template channel must be webhook or email",
+                evidence={"channel": channel or None, "supported": sorted(SUPPORTED_CHANNELS)},
+            ),
+            policy_check(
+                code="template.render",
+                status="passed" if rendered_title and rendered_message else "failed",
+                template=name or event_type or None,
+                message="template title and message render non-empty text" if rendered_title and rendered_message else "template title and message must render non-empty text",
+                evidence={"title": rendered_title[:120], "message": rendered_message[:120]},
+            ),
+            policy_check(
+                code="template.target",
+                status="passed" if spec.get("target_type") and spec.get("target_id") else "failed",
+                template=name or event_type or None,
+                message="template declares target_type and target_id" if spec.get("target_type") and spec.get("target_id") else "template must declare target_type and target_id",
+                evidence={"target_type": spec.get("target_type"), "target_id": spec.get("target_id")},
+            ),
+            policy_check(
+                code="template.dedupe.payload",
+                status="passed" if str(payload.get("dedupe_key") or "").strip() else "failed",
+                template=name or event_type or None,
+                message="template payload includes dedupe_key" if str(payload.get("dedupe_key") or "").strip() else "template payload must include dedupe_key",
+                evidence={"dedupe_key": payload.get("dedupe_key")},
+            ),
+            policy_check(
+                code="template.dedupe.cooldown",
+                status="passed" if int_value(metadata.get("dedupe_minutes")) is not None and int_value(metadata.get("dedupe_minutes")) > 0 else "failed",
+                template=name or event_type or None,
+                message="template declares a positive dedupe cooldown" if int_value(metadata.get("dedupe_minutes")) is not None and int_value(metadata.get("dedupe_minutes")) > 0 else "template metadata must declare positive dedupe_minutes",
+                evidence={"dedupe_minutes": metadata.get("dedupe_minutes")},
+            ),
+        ]
+    )
+    if channel == "webhook":
+        checks.extend(validate_webhook_policy(spec, metadata, rendered_title, rendered_message))
+    elif channel == "email":
+        checks.extend(validate_email_policy(spec, metadata))
+    return checks
+
+
+def validate_webhook_policy(
+    spec: dict[str, Any],
+    metadata: dict[str, Any],
+    rendered_title: str,
+    rendered_message: str,
+) -> list[dict[str, Any]]:
+    name = str(spec.get("name") or spec.get("event_type") or "").strip() or None
+    provider = provider_from_spec(spec)
+    webhook_url = str(metadata.get("webhook_url") or "").strip()
+    parsed_url = urlparse(webhook_url)
+    retry_count = int_value(metadata.get("retry_count"))
+    checks = [
+        policy_check(
+            code="webhook.provider",
+            status="passed" if provider in SUPPORTED_WEBHOOK_PROVIDERS else "failed",
+            template=name,
+            message=f"webhook provider {provider} is supported" if provider in SUPPORTED_WEBHOOK_PROVIDERS else "webhook provider is unsupported",
+            evidence={"provider": provider, "supported": sorted(SUPPORTED_WEBHOOK_PROVIDERS)},
+        ),
+        policy_check(
+            code="webhook.url",
+            status="passed" if parsed_url.scheme == "https" and bool(parsed_url.netloc) else "failed",
+            template=name,
+            message="webhook URL uses HTTPS" if parsed_url.scheme == "https" and bool(parsed_url.netloc) else "webhook URL must be an absolute HTTPS URL",
+            evidence={"scheme": parsed_url.scheme or None, "host": parsed_url.netloc or None},
+        ),
+        policy_check(
+            code="webhook.retry_policy",
+            status="passed" if retry_count is not None and retry_count >= 1 else "failed",
+            template=name,
+            message="webhook retry_count is enabled" if retry_count is not None and retry_count >= 1 else "webhook metadata must set retry_count >= 1",
+            evidence={"retry_count": metadata.get("retry_count")},
+        ),
+    ]
+    if provider in {"generic"}:
+        signature_secret = str(metadata.get("signature_secret") or metadata.get("webhook_secret") or "").strip()
+        checks.extend(
+            [
+                policy_check(
+                    code="webhook.signature_secret",
+                    status="passed" if signature_secret else "failed",
+                    template=name,
+                    message="generic webhook declares signature secret" if signature_secret else "generic webhook must declare signature_secret or webhook_secret",
+                    evidence={"configured": bool(signature_secret)},
+                ),
+                policy_check(
+                    code="webhook.signature_headers",
+                    status="passed" if metadata.get("signature_header") and metadata.get("signature_timestamp_header") else "failed",
+                    template=name,
+                    message=(
+                        "generic webhook declares signature headers"
+                        if metadata.get("signature_header") and metadata.get("signature_timestamp_header")
+                        else "generic webhook must declare signature_header and signature_timestamp_header"
+                    ),
+                    evidence={
+                        "signature_header": metadata.get("signature_header"),
+                        "signature_timestamp_header": metadata.get("signature_timestamp_header"),
+                    },
+                ),
+            ]
+        )
+    if provider in {"feishu", "lark"}:
+        keyword = str(metadata.get("platform_keyword") or "").strip()
+        rendered_text = f"{rendered_title}\n{rendered_message}"
+        checks.append(
+            policy_check(
+                code="webhook.feishu.keyword",
+                status="passed" if keyword and keyword in rendered_text else "failed",
+                template=name,
+                message=(
+                    "Feishu/Lark webhook keyword is present in rendered content"
+                    if keyword and keyword in rendered_text
+                    else "Feishu/Lark webhook must declare platform_keyword and render it in message content"
+                ),
+                evidence={"platform_keyword": keyword or None},
+            )
+        )
+    if provider in {"wecom", "wechat_work", "enterprise_wechat"}:
+        message_type = str(metadata.get("webhook_message_type") or "").strip().lower()
+        query = parse_qs(parsed_url.query)
+        checks.extend(
+            [
+                policy_check(
+                    code="webhook.wecom.message_type",
+                    status="passed" if message_type in {"text", "markdown"} else "failed",
+                    template=name,
+                    message=(
+                        f"WeCom webhook message type is {message_type}"
+                        if message_type in {"text", "markdown"}
+                        else "WeCom webhook must declare webhook_message_type text or markdown"
+                    ),
+                    evidence={"webhook_message_type": message_type or None},
+                ),
+                policy_check(
+                    code="webhook.wecom.key",
+                    status="passed" if bool(query.get("key", [""])[0]) else "failed",
+                    template=name,
+                    message="WeCom webhook URL includes key query parameter" if bool(query.get("key", [""])[0]) else "WeCom webhook URL must include key query parameter",
+                    evidence={"has_key": bool(query.get("key", [""])[0])},
+                ),
+            ]
+        )
+    return checks
+
+
+def validate_email_policy(spec: dict[str, Any], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    name = str(spec.get("name") or spec.get("event_type") or "").strip() or None
+    expected_recipient = str(spec.get("expected_recipient_email") or "").strip()
+    expected_subject = str(spec.get("expected_subject") or "").strip()
+    routing_configured = bool(spec.get("recipient_permission_code") or spec.get("recipient_group_id"))
+    return [
+        policy_check(
+            code="email.routing",
+            status="passed" if routing_configured else "failed",
+            template=name,
+            message="email template declares recipient routing" if routing_configured else "email template must declare recipient_permission_code or recipient_group_id",
+            evidence={
+                "recipient_permission_code": spec.get("recipient_permission_code"),
+                "recipient_group_id": spec.get("recipient_group_id"),
+            },
+        ),
+        policy_check(
+            code="email.expected_recipient",
+            status="passed" if expected_recipient else "failed",
+            template=name,
+            message="email expected recipient is declared" if expected_recipient else "email expected_recipient_email must be declared for sandbox verification",
+            evidence={"expected_recipient_email": expected_recipient or None},
+        ),
+        policy_check(
+            code="email.expected_subject",
+            status="passed" if expected_subject else "failed",
+            template=name,
+            message="email expected subject is declared" if expected_subject else "email expected_subject must be declared for sandbox verification",
+            evidence={"expected_subject": expected_subject or None},
+        ),
+        policy_check(
+            code="email.subject_prefix",
+            status="passed" if "email_subject_prefix" in metadata else "failed",
+            template=name,
+            message="email subject prefix policy is explicit" if "email_subject_prefix" in metadata else "email metadata must explicitly declare email_subject_prefix",
+            evidence={"email_subject_prefix": metadata.get("email_subject_prefix")},
+        ),
+    ]
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    template: str | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "template": template,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
+
+
+def int_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def make_audit_transport(*, response_sequence: list[int], requests: list[dict[str, Any]]):
@@ -424,7 +759,10 @@ def template_passed(template_report: dict[str, Any]) -> bool:
 def build_summary(report: dict[str, Any]) -> dict[str, Any]:
     templates = report.get("templates") or []
     coverage = report.get("coverage") or {}
+    policy_contract = report.get("policy_contract") or {}
     template_failed_count = sum(1 for item in templates if item.get("status") != "passed")
+    policy_failed_count = int(policy_contract.get("failed_count") or 0)
+    policy_warning_count = int(policy_contract.get("warning_count") or 0)
     error_count = len(report.get("errors") or [])
     coverage_failed = 1 if coverage.get("status") == "failed" else 0
     channel_counts: dict[str, int] = {}
@@ -438,10 +776,13 @@ def build_summary(report: dict[str, Any]) -> dict[str, Any]:
         "channel_counts": dict(sorted(channel_counts.items())),
         "email_template_count": channel_counts.get("email", 0),
         "webhook_template_count": channel_counts.get("webhook", 0),
+        "policy_contract_status": policy_contract.get("status"),
+        "policy_contract_failed_count": policy_failed_count,
+        "policy_contract_warning_count": policy_warning_count,
         "coverage_status": coverage.get("status"),
         "missing_required_event_count": len(coverage.get("missing_events") or []),
         "error_count": error_count,
-        "failed_count": template_failed_count + error_count + coverage_failed,
+        "failed_count": policy_failed_count + template_failed_count + error_count + coverage_failed,
     }
 
 
