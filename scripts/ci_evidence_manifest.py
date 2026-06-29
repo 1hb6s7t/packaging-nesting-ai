@@ -330,6 +330,10 @@ def validate_release_image_dependency_audit(path: Path) -> dict[str, Any]:
         errors.append("release image dependency audit has release-blocking missing installed packages")
     if summary.get("dependency_review_status") not in {"passed", None}:
         errors.append("release image dependency audit dependency review did not pass")
+    if summary.get("policy_contract_status") != "passed":
+        errors.append("release image dependency audit policy contract did not pass")
+    if summary.get("policy_contract_failed_count") not in {0, None}:
+        errors.append("release image dependency audit policy contract has failed checks")
     return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
 
 

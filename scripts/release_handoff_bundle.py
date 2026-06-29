@@ -102,7 +102,7 @@ def build_release_handoff_bundle(
                 "release_image_dependency_audit",
                 release_image_dependency_audit,
                 required=False,
-                validator=validate_status_report,
+                validator=validate_release_image_dependency_audit,
             )
         )
     for artifact in optional_artifacts:
@@ -352,6 +352,28 @@ def validate_dependency_inventory(payload: dict[str, Any]) -> dict[str, Any]:
         "summary": summary,
         "errors": errors,
     }
+
+
+def validate_release_image_dependency_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    if payload.get("schema_version") != 1:
+        errors.append("release image dependency audit schema_version must be 1")
+    if payload.get("status") != "passed":
+        errors.append(f"release image dependency audit must be passed, got {payload.get('status') or '<missing>'}")
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if summary.get("error_count") not in {0, None}:
+        errors.append("release image dependency audit summary has errors")
+    if summary.get("failed_command_count") not in {0, None}:
+        errors.append("release image dependency audit has failed commands")
+    if summary.get("release_blocking_missing_install_count") not in {0, None}:
+        errors.append("release image dependency audit has release-blocking missing installed packages")
+    if summary.get("dependency_review_status") not in {"passed", None}:
+        errors.append("release image dependency audit dependency review did not pass")
+    if summary.get("policy_contract_status") != "passed":
+        errors.append("release image dependency audit policy contract did not pass")
+    if summary.get("policy_contract_failed_count") not in {0, None}:
+        errors.append("release image dependency audit policy contract has failed checks")
+    return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
 
 
 def derived_evidence_path(preflight_payload: dict[str, Any], key: str) -> Path | None:

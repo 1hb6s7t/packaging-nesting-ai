@@ -95,7 +95,25 @@ def test_release_handoff_bundle_fails_when_release_image_dependency_audit_failed
     )
 
     assert report["status"] == "failed"
-    assert "status report must be passed, got failed" in report["errors"]
+    assert "release image dependency audit must be passed, got failed" in report["errors"]
+
+
+def test_release_handoff_bundle_fails_when_release_image_policy_contract_failed(tmp_path: Path) -> None:
+    module = load_release_handoff_bundle_module()
+    paths = write_complete_handoff_inputs(tmp_path)
+    failed_report = json.loads(paths["release_image_dependency_audit"].read_text(encoding="utf-8"))
+    failed_report["summary"]["policy_contract_status"] = "failed"
+    failed_report["summary"]["policy_contract_failed_count"] = 1
+    paths["release_image_dependency_audit"].write_text(json.dumps(failed_report, ensure_ascii=False), encoding="utf-8")
+
+    report = module.build_release_handoff_bundle(
+        preflight_report=paths["preflight"],
+        preflight_verification=paths["preflight_verification"],
+        release_image_dependency_audit=paths["release_image_dependency_audit"],
+    )
+
+    assert report["status"] == "failed"
+    assert "release image dependency audit policy contract did not pass" in report["errors"]
 
 
 def test_release_handoff_bundle_fails_when_required_report_failed(tmp_path: Path) -> None:
@@ -186,7 +204,11 @@ def write_complete_handoff_inputs(tmp_path: Path) -> dict[str, Path]:
                 "dependency_review_status": "passed",
                 "error_count": 0,
                 "warning_count": 0,
+                "policy_contract_status": "passed",
+                "policy_contract_failed_count": 0,
+                "policy_contract_warning_count": 0,
             },
+            "policy_contract": {"status": "passed", "failed_count": 0, "warning_count": 0, "checks": []},
             "errors": [],
             "warnings": [],
         },

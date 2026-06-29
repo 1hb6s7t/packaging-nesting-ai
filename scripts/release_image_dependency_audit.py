@@ -71,6 +71,7 @@ def build_release_image_dependency_audit(
             inventory_output=resolved_inventory_output,
             review_output=resolved_review_output,
             dependency_review_file=resolved_dependency_review_file,
+            skip_build=skip_build,
             commands=commands,
             errors=errors,
             warnings=warnings,
@@ -181,6 +182,7 @@ def build_release_image_dependency_audit(
         inventory_output=resolved_inventory_output,
         review_output=resolved_review_output,
         dependency_review_file=resolved_dependency_review_file,
+        skip_build=skip_build,
         commands=commands,
         errors=errors,
         warnings=warnings,
@@ -252,6 +254,7 @@ def build_report(
     inventory_output: Path,
     review_output: Path,
     dependency_review_file: Path | None,
+    skip_build: bool,
     commands: list[CommandExecution],
     errors: list[str],
     warnings: list[str],
@@ -260,19 +263,21 @@ def build_report(
     review_status: str | None = None,
 ) -> dict[str, Any]:
     failed_commands = [command for command in commands if command.exit_code != 0]
-    return {
+    report = {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
         "status": "passed" if not errors and not failed_commands else "failed",
         "repo_root": str(REPO_ROOT),
         "image_tag": image_tag,
         "dockerfile": str(dockerfile),
+        "skip_build": skip_build,
         "inventory_output": str(inventory_output),
         "dependency_review_output": str(review_output),
         "dependency_review_file": str(dependency_review_file) if dependency_review_file else None,
         "summary": {
             "command_count": len(commands),
             "failed_command_count": len(failed_commands),
+            "skip_build": skip_build,
             "missing_install_count": (inventory_summary or {}).get("missing_install_count"),
             "release_blocking_missing_install_count": (inventory_summary or {}).get(
                 "release_blocking_missing_install_count"
@@ -287,6 +292,215 @@ def build_report(
         "dependency_review_summary": review_summary or {},
         "errors": errors,
         "warnings": warnings,
+    }
+    return attach_policy_contract(report)
+
+
+def attach_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    policy_contract = validate_release_image_dependency_policy_contract(report)
+    report["policy_contract"] = policy_contract
+    summary = report.get("summary")
+    if isinstance(summary, dict):
+        summary["policy_contract_status"] = policy_contract.get("status")
+        summary["policy_contract_failed_count"] = int(policy_contract.get("failed_count") or 0)
+        summary["policy_contract_warning_count"] = int(policy_contract.get("warning_count") or 0)
+    if int(policy_contract.get("failed_count") or 0):
+        report["status"] = "failed"
+    return report
+
+
+def validate_release_image_dependency_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    inventory_summary = report.get("inventory_summary") if isinstance(report.get("inventory_summary"), dict) else {}
+    review_summary = (
+        report.get("dependency_review_summary")
+        if isinstance(report.get("dependency_review_summary"), dict)
+        else {}
+    )
+    commands = report.get("commands") if isinstance(report.get("commands"), list) else []
+    command_by_name = {
+        str(command.get("name")): command
+        for command in commands
+        if isinstance(command, dict) and command.get("name")
+    }
+    failed_commands = [name for name, command in command_by_name.items() if command.get("exit_code") != 0]
+    errors = [str(error) for error in report.get("errors") or []]
+    warnings = [str(warning) for warning in report.get("warnings") or []]
+    skip_build = bool(report.get("skip_build"))
+    docker_build = command_by_name.get("docker_build")
+    inventory_command = command_by_name.get("release_image_inventory")
+    review_command = command_by_name.get("release_image_dependency_review")
+    release_blocking_missing = int_or_none(summary.get("release_blocking_missing_install_count"))
+    missing_install_count = int_or_none(summary.get("missing_install_count"))
+    review_required_count = int_or_none(summary.get("review_required_count"))
+    approved_count = int_or_none(review_summary.get("approved_count"))
+    dependency_review_status = summary.get("dependency_review_status")
+    review_policy_status = review_summary.get("policy_contract_status")
+
+    checks = [
+        policy_check(
+            code="schema.version",
+            status="passed" if report.get("schema_version") == 1 else "failed",
+            message="release image dependency audit schema_version is 1"
+            if report.get("schema_version") == 1
+            else "release image dependency audit schema_version must be 1",
+            evidence={"schema_version": report.get("schema_version")},
+        ),
+        policy_check(
+            code="dockerfile.present",
+            status="passed" if not any(error.startswith("backend Dockerfile does not exist:") for error in errors) else "failed",
+            message="backend Dockerfile exists for release image dependency audit"
+            if not any(error.startswith("backend Dockerfile does not exist:") for error in errors)
+            else "backend Dockerfile must exist for release image dependency audit",
+            evidence={"dockerfile": report.get("dockerfile")},
+        ),
+        policy_check(
+            code="docker.build",
+            status="passed"
+            if skip_build or (isinstance(docker_build, dict) and docker_build.get("exit_code") == 0)
+            else "failed",
+            message="release image was built or an explicit image tag was reused"
+            if skip_build or (isinstance(docker_build, dict) and docker_build.get("exit_code") == 0)
+            else "release image must build successfully unless --skip-build is used",
+            evidence={
+                "skip_build": skip_build,
+                "exit_code": docker_build.get("exit_code") if isinstance(docker_build, dict) else None,
+            },
+        ),
+        policy_check(
+            code="container.inventory",
+            status="passed"
+            if isinstance(inventory_command, dict)
+            and inventory_command.get("exit_code") == 0
+            and inventory_summary.get("schema_version") in {1, None}
+            else "failed",
+            message="dependency inventory was generated inside the release image"
+            if isinstance(inventory_command, dict) and inventory_command.get("exit_code") == 0
+            else "dependency inventory must be generated inside the release image",
+            evidence={
+                "exit_code": inventory_command.get("exit_code") if isinstance(inventory_command, dict) else None,
+                "inventory_output": report.get("inventory_output"),
+                "dependency_count": inventory_summary.get("dependency_count"),
+            },
+        ),
+        policy_check(
+            code="container.dependency_review",
+            status="passed"
+            if isinstance(review_command, dict) and review_command.get("exit_code") == 0
+            else "failed",
+            message="dependency review audit was generated inside the release image"
+            if isinstance(review_command, dict) and review_command.get("exit_code") == 0
+            else "dependency review audit must be generated inside the release image",
+            evidence={
+                "exit_code": review_command.get("exit_code") if isinstance(review_command, dict) else None,
+                "dependency_review_output": report.get("dependency_review_output"),
+            },
+        ),
+        policy_check(
+            code="commands.success",
+            status="passed" if not failed_commands else "failed",
+            message="all release image dependency audit commands succeeded"
+            if not failed_commands
+            else "all release image dependency audit commands must succeed",
+            evidence={"failed_commands": failed_commands},
+        ),
+        policy_check(
+            code="inventory.release_blocking_installs",
+            status="passed" if release_blocking_missing == 0 else "failed",
+            message="release image has no release-blocking missing installed packages"
+            if release_blocking_missing == 0
+            else "release image must not have release-blocking missing installed packages",
+            evidence={
+                "missing_install_count": missing_install_count,
+                "release_blocking_missing_install_count": release_blocking_missing,
+            },
+        ),
+        policy_check(
+            code="inventory.review_required",
+            status="passed" if isinstance(review_required_count, int) else "failed",
+            message="release image dependency inventory exposes review-required count"
+            if isinstance(review_required_count, int)
+            else "release image dependency inventory must expose review-required count",
+            evidence={"review_required_count": summary.get("review_required_count")},
+        ),
+        policy_check(
+            code="review.status",
+            status="passed" if dependency_review_status == "passed" else "failed",
+            message="release image dependency review audit passed"
+            if dependency_review_status == "passed"
+            else "release image dependency review audit must pass",
+            evidence={"dependency_review_status": dependency_review_status},
+        ),
+        policy_check(
+            code="review.coverage",
+            status="passed"
+            if isinstance(review_required_count, int)
+            and isinstance(approved_count, int)
+            and approved_count == review_required_count
+            else "failed",
+            message="release image dependency review approvals cover every review-required item"
+            if isinstance(review_required_count, int)
+            and isinstance(approved_count, int)
+            and approved_count == review_required_count
+            else "release image dependency review approvals must cover every review-required item",
+            evidence={"review_required_count": review_required_count, "approved_count": approved_count},
+        ),
+        policy_check(
+            code="review.policy_contract",
+            status="passed" if review_policy_status == "passed" else "failed",
+            message="release image dependency review policy contract passed"
+            if review_policy_status == "passed"
+            else "release image dependency review policy contract must pass",
+            evidence={"policy_contract_status": review_policy_status},
+        ),
+        policy_check(
+            code="report.errors_clear",
+            status="passed" if not errors else "failed",
+            message="release image dependency audit has no report errors"
+            if not errors
+            else "release image dependency audit report errors must be cleared",
+            evidence={"error_count": len(errors), "errors": errors},
+        ),
+        policy_check(
+            code="warnings.clear",
+            status="warning" if warnings else "passed",
+            message="release image dependency audit has no warnings"
+            if not warnings
+            else "release image dependency audit warnings should be reviewed before handoff",
+            evidence={"warning_count": len(warnings), "warnings": warnings},
+        ),
+    ]
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
     }
 
 
@@ -373,7 +587,8 @@ def main(argv: list[str] | None = None) -> int:
         f"report={output_path} "
         f"missing_install={summary['missing_install_count']} "
         f"review_required={summary['review_required_count']} "
-        f"review_status={summary['dependency_review_status']}",
+        f"review_status={summary['dependency_review_status']} "
+        f"policy={summary.get('policy_contract_status')}",
         flush=True,
     )
     return 0 if report["status"] == "passed" else 1

@@ -105,6 +105,33 @@ def test_ci_evidence_manifest_includes_release_image_dependency_artifacts_when_p
     assert by_name["release_image_dependency_audit"]["summary"]["release_blocking_missing_install_count"] == 0
 
 
+def test_ci_evidence_manifest_rejects_failed_release_image_policy_contract(tmp_path: Path) -> None:
+    module = load_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    failed_report = json.loads(paths["release_image_dependency_audit"].read_text(encoding="utf-8"))
+    failed_report["summary"]["policy_contract_status"] = "failed"
+    failed_report["summary"]["policy_contract_failed_count"] = 1
+    paths["release_image_dependency_audit"].write_text(json.dumps(failed_report, ensure_ascii=False), encoding="utf-8")
+
+    manifest = module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        dependency_review_audit=paths["dependency_review_audit"],
+        release_image_dependency_audit=paths["release_image_dependency_audit"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=tmp_path / "ci-evidence-manifest.json",
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+
+    artifact = next(item for item in manifest["artifacts"] if item["name"] == "release_image_dependency_audit")
+    assert manifest["status"] == "failed"
+    assert artifact["status"] == "failed"
+    assert "release image dependency audit policy contract did not pass" in artifact["errors"]
+
+
 def test_ci_evidence_manifest_includes_release_handoff_bundle_when_provided(tmp_path: Path) -> None:
     module = load_ci_evidence_manifest_module()
     paths = write_complete_ci_evidence(tmp_path)
@@ -469,7 +496,11 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
                 "dependency_review_status": "passed",
                 "error_count": 0,
                 "warning_count": 0,
+                "policy_contract_status": "passed",
+                "policy_contract_failed_count": 0,
+                "policy_contract_warning_count": 0,
             },
+            "policy_contract": {"status": "passed", "failed_count": 0, "warning_count": 0, "checks": []},
             "errors": [],
             "warnings": [],
         },

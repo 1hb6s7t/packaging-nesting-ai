@@ -51,6 +51,9 @@ def test_release_image_dependency_audit_runs_inventory_and_review_in_container(t
 
     assert report["status"] == "passed"
     assert report["summary"]["command_count"] == 3
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
+    assert report["policy_contract"]["status"] == "passed"
     assert report["summary"]["missing_install_count"] == 0
     assert report["summary"]["dependency_review_status"] == "passed"
     assert calls[0][:3] == ["docker", "build", "-f"]
@@ -88,6 +91,9 @@ def test_release_image_dependency_audit_fails_when_image_inventory_has_missing_i
     )
 
     assert report["status"] == "failed"
+    failed_codes = {check["code"] for check in report["policy_contract"]["failed_checks"]}
+    assert "inventory.release_blocking_installs" in failed_codes
+    assert "review.status" in failed_codes
     assert "release image dependency inventory has 2 release-blocking missing installed package(s)" in report["errors"]
     assert "release image dependency review audit must be passed, got skipped" in report["errors"]
 
@@ -123,6 +129,8 @@ def test_release_image_dependency_audit_skip_build_reuses_image_tag(tmp_path: Pa
 
     assert report["status"] == "passed"
     assert command_names == ["release_image_inventory", "release_image_dependency_review"]
+    assert report["summary"]["skip_build"] is True
+    assert report["summary"]["policy_contract_status"] == "passed"
 
 
 def test_release_image_dependency_audit_allows_non_blocking_missing_test_extra(tmp_path: Path) -> None:
@@ -161,6 +169,41 @@ def test_release_image_dependency_audit_allows_non_blocking_missing_test_extra(t
     assert report["status"] == "passed"
     assert report["summary"]["missing_install_count"] == 1
     assert report["summary"]["release_blocking_missing_install_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+
+
+def test_release_image_dependency_audit_rejects_failed_review_policy_contract(tmp_path: Path) -> None:
+    module = load_release_image_dependency_audit_module()
+    output_dir = repo_tmp_dir(tmp_path)
+    inventory_output = output_dir / "dependency-inventory-release-image.json"
+    review_output = output_dir / "dependency-review-audit-release-image.json"
+
+    def runner(name: str, command: list[str], cwd: Path, timeout_sec: int):
+        if name == "release_image_inventory":
+            write_json(inventory_output, inventory(missing_install_count=0, review_required_count=0))
+        if name == "release_image_dependency_review":
+            write_json(
+                review_output,
+                review_audit(status="passed", review_required_count=0, policy_contract_status="failed"),
+            )
+        return module.CommandExecution(
+            name=name,
+            command=command,
+            cwd=str(cwd),
+            timeout_sec=timeout_sec,
+            exit_code=0,
+            duration_sec=0.01,
+        )
+
+    report = module.build_release_image_dependency_audit(
+        inventory_output=inventory_output,
+        review_output=review_output,
+        command_runner=runner,
+    )
+
+    failed_codes = {check["code"] for check in report["policy_contract"]["failed_checks"]}
+    assert report["status"] == "failed"
+    assert "review.policy_contract" in failed_codes
 
 
 def inventory(
@@ -188,7 +231,8 @@ def inventory(
     }
 
 
-def review_audit(*, status: str, review_required_count: int) -> dict:
+def review_audit(*, status: str, review_required_count: int, policy_contract_status: str | None = None) -> dict:
+    policy_status = policy_contract_status or ("passed" if status == "passed" else status)
     return {
         "schema_version": 1,
         "status": status,
@@ -196,6 +240,15 @@ def review_audit(*, status: str, review_required_count: int) -> dict:
             "review_required_count": review_required_count,
             "approved_count": 0,
             "missing_ack_count": review_required_count,
+            "policy_contract_status": policy_status,
+            "policy_contract_failed_count": 0 if policy_status == "passed" else 1,
+            "policy_contract_warning_count": 0,
+        },
+        "policy_contract": {
+            "status": policy_status,
+            "failed_count": 0 if policy_status == "passed" else 1,
+            "warning_count": 0,
+            "checks": [],
         },
     }
 
