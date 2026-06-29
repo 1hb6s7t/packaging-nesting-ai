@@ -1,0 +1,27 @@
+{
+  "orders": [
+    {
+      "order_id": "O001",
+      "product_name": "彩盒彩盒 A",
+      "category": "box",
+      "is_repeat_order": true,
+      "quote_amount": 6800,
+      "contacted": true,
+      "quantity": 1200,
+      "material": "white_card",
+      "thickness": "350gsm"
+    },
+    {
+      "order_id": "O002",
+      "product_name": "礼盒彩盒 B",
+      "category": "box",
+      "is_repeat_order": false,
+      "quote_amount": 4200,
+      "contacted": true,
+      "quantity": 800,
+      "material": "white_card",
+      "thickness": "350gsm"
+    }
+  ]
+}
+

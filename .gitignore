@@ -1,0 +1,25 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+*.pyo
+
+# Local databases and generated runtime state
+*.db
+storage/
+logs/
+*.log
+.codex-live-*.log
+
+# Generated release and validation artifacts
+artifacts/
+tmp/
+
+# Frontend/build outputs
+node_modules/
+dist/
+
+# Local secrets. Keep checked-in examples visible.
+.env
+.env.*
+!.env.production.example

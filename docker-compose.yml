@@ -1,0 +1,180 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: packaging_nesting
+      POSTGRES_USER: packaging
+      POSTGRES_PASSWORD: packaging
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U packaging -d packaging_nesting"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  minio:
+    image: minio/minio:RELEASE.2026-06-13T11-33-47Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://packaging:packaging@postgres:5432/packaging_nesting
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      STORAGE_BACKEND: minio
+      TASK_EXECUTION_BACKEND: celery
+      TASK_STALE_AFTER_SEC: 300
+      TASK_SOFT_TIME_LIMIT_SEC: 1700
+      TASK_HARD_TIME_LIMIT_SEC: 1800
+      TASK_WORKER_PREFETCH_MULTIPLIER: 1
+      TASK_ALERT_ACTIVE_THRESHOLD: 50
+      TASK_ALERT_QUEUED_THRESHOLD: 30
+      TASK_ALERT_STALE_RUNNING_THRESHOLD: 1
+      TASK_ALERT_FAILURE_THRESHOLD: 10
+      TASK_ALERT_DEDUPE_MINUTES: 30
+      EXTERNAL_ALERT_WEBHOOK_URL: ""
+      EXTERNAL_CONVERSION_SERVICE_URL: ""
+      EXTERNAL_CONVERSION_SERVICE_API_KEY: ""
+      BENCHMARK_TASK_TIMEOUT_SEC: 300
+      MAINTENANCE_SCHEDULER_ENABLED: "false"
+      MAINTENANCE_INTERVAL_MINUTES: 60
+      MAINTENANCE_ARCHIVE_EXPIRED_EXPORTS: "true"
+      MAINTENANCE_CONVERSION_SLA_CHECK: "true"
+      MAINTENANCE_TASK_ALERT_CHECK: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import httpx; raise SystemExit(0 if httpx.get('http://127.0.0.1:8000/api/health/ready', timeout=2).status_code == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://packaging:packaging@postgres:5432/packaging_nesting
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      STORAGE_BACKEND: minio
+      TASK_EXECUTION_BACKEND: celery
+      TASK_STALE_AFTER_SEC: 300
+      TASK_SOFT_TIME_LIMIT_SEC: 1700
+      TASK_HARD_TIME_LIMIT_SEC: 1800
+      TASK_WORKER_PREFETCH_MULTIPLIER: 1
+      TASK_ALERT_ACTIVE_THRESHOLD: 50
+      TASK_ALERT_QUEUED_THRESHOLD: 30
+      TASK_ALERT_STALE_RUNNING_THRESHOLD: 1
+      TASK_ALERT_FAILURE_THRESHOLD: 10
+      TASK_ALERT_DEDUPE_MINUTES: 30
+      EXTERNAL_ALERT_WEBHOOK_URL: ""
+      EXTERNAL_CONVERSION_SERVICE_URL: ""
+      EXTERNAL_CONVERSION_SERVICE_API_KEY: ""
+      BENCHMARK_TASK_TIMEOUT_SEC: 300
+      MAINTENANCE_SCHEDULER_ENABLED: "false"
+      MAINTENANCE_INTERVAL_MINUTES: 60
+      MAINTENANCE_ARCHIVE_EXPIRED_EXPORTS: "true"
+      MAINTENANCE_CONVERSION_SLA_CHECK: "true"
+      MAINTENANCE_TASK_ALERT_CHECK: "true"
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.workers.celery_app.celery_app beat --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://packaging:packaging@postgres:5432/packaging_nesting
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      STORAGE_BACKEND: minio
+      TASK_EXECUTION_BACKEND: celery
+      TASK_STALE_AFTER_SEC: 300
+      TASK_SOFT_TIME_LIMIT_SEC: 1700
+      TASK_HARD_TIME_LIMIT_SEC: 1800
+      TASK_WORKER_PREFETCH_MULTIPLIER: 1
+      TASK_ALERT_ACTIVE_THRESHOLD: 50
+      TASK_ALERT_QUEUED_THRESHOLD: 30
+      TASK_ALERT_STALE_RUNNING_THRESHOLD: 1
+      TASK_ALERT_FAILURE_THRESHOLD: 10
+      TASK_ALERT_DEDUPE_MINUTES: 30
+      EXTERNAL_ALERT_WEBHOOK_URL: ""
+      EXTERNAL_CONVERSION_SERVICE_URL: ""
+      EXTERNAL_CONVERSION_SERVICE_API_KEY: ""
+      BENCHMARK_TASK_TIMEOUT_SEC: 300
+      MAINTENANCE_SCHEDULER_ENABLED: "true"
+      MAINTENANCE_INTERVAL_MINUTES: 60
+      MAINTENANCE_ARCHIVE_EXPIRED_EXPORTS: "true"
+      MAINTENANCE_CONVERSION_SLA_CHECK: "true"
+      MAINTENANCE_TASK_ALERT_CHECK: "true"
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+
+volumes:
+  postgres_data:
+  minio_data:

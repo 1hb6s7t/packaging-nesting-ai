@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "organization_directory": {
+    "org_units": [
+      {
+        "code": "planning",
+        "name": "Production Planning",
+        "expected_roles": ["planner"]
+      },
+      {
+        "code": "press_line_a",
+        "name": "Press Line A",
+        "expected_roles": ["line_owner", "operator"]
+      }
+    ],
+    "recipient_groups": [
+      {
+        "name": "Production Exceptions",
+        "department_codes": ["planning", "press_line_a"],
+        "purpose": "Receives production readiness and exception-writeback alerts"
+      }
+    ]
+  },
+  "crm": {
+    "adapter_type": "crm_sandbox_orders",
+    "system_type": "crm",
+    "config": {
+      "mode": "mock",
+      "dry_run": true,
+      "records_path": "data.orders",
+      "status_path": "state",
+      "status_dictionary": {
+        "READY_TO_RUN": "ready",
+        "WAIT_RELEASE": "pending_release"
+      },
+      "field_mapping": {
+        "order_id": "crm_id",
+        "external_order_id": "crm_id",
+        "customer_name": "customer.name",
+        "product_name": "product.title",
+        "quantity": "qty",
+        "material": "spec.material",
+        "thickness": "spec.thickness",
+        "due_date": "due"
+      },
+      "organization_acceptance": {
+        "required_org_unit_codes": ["planning"],
+        "required_recipient_group_names": ["Production Exceptions"],
+        "require_users": true,
+        "require_recipient_groups": true
+      },
+      "pages": [
+        {
+          "data": {
+            "orders": [
+              {
+                "crm_id": "CRM-SBX-1001",
+                "state": "READY_TO_RUN",
+                "customer": {
+                  "name": "Acme Retail"
+                },
+                "product": {
+                  "title": "Gift Box"
+                },
+                "qty": 1200,
+                "spec": {
+                  "material": "white_card",
+                  "thickness": "350gsm"
+                },
+                "due": "2026-07-01"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "mes": {
+    "adapter_type": "mes_sandbox_schedule",
+    "system_type": "mes",
+    "config": {
+      "mode": "mock",
+      "dry_run": true,
+      "records_path": "data.jobs",
+      "domain_target": "production_schedule",
+      "external_id_path": "workOrder",
+      "status_path": "state",
+      "status_dictionary": {
+        "READY_TO_RUN": "scheduled",
+        "HOLD_MATERIAL": "blocked"
+      },
+      "field_mapping": {
+        "order_id": "orderId",
+        "job_id": "jobId",
+        "line_code": "line",
+        "machine_code": "machine",
+        "planned_start_at": "plannedStart",
+        "planned_end_at": "plannedEnd",
+        "quantity": "qty"
+      },
+      "organization_acceptance": {
+        "required_org_unit_codes": ["press_line_a"],
+        "required_recipient_group_names": ["Production Exceptions"],
+        "require_users": true,
+        "require_recipient_groups": true
+      },
+      "pages": [
+        {
+          "data": {
+            "jobs": [
+              {
+                "workOrder": "WO-SBX-2001",
+                "orderId": "CRM-SBX-1001",
+                "jobId": "NEST-SBX-001",
+                "state": "READY_TO_RUN",
+                "line": "press_line_a",
+                "machine": "press_01",
+                "plannedStart": "2026-07-01T09:00:00+08:00",
+                "plannedEnd": "2026-07-01T12:00:00+08:00",
+                "qty": 1200
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "erp_inventory": {
+    "adapter_type": "erp_sandbox_inventory",
+    "system_type": "erp",
+    "config": {
+      "mode": "mock",
+      "dry_run": true,
+      "domain_target": "inventory_snapshot",
+      "external_id_path": "stockId",
+      "status_path": "state",
+      "status_dictionary": {
+        "AVAILABLE": "available",
+        "QUALITY_HOLD": "quality_hold"
+      },
+      "field_mapping": {
+        "material_code": "material.code",
+        "material_name": "material.name",
+        "warehouse_code": "warehouse",
+        "available_qty": "available",
+        "reserved_qty": "reserved",
+        "unit": "unit"
+      },
+      "sample_records": [
+        {
+          "stockId": "STOCK-SBX-350",
+          "state": "AVAILABLE",
+          "material": {
+            "code": "WHITE-350",
+            "name": "White card 350gsm"
+          },
+          "warehouse": "WH-A",
+          "available": 9000,
+          "reserved": 1200,
+          "unit": "sheet"
+        }
+      ]
+    }
+  },
+  "erp_delivery": {
+    "adapter_type": "erp_sandbox_delivery",
+    "system_type": "erp",
+    "config": {
+      "mode": "mock",
+      "dry_run": true,
+      "domain_target": "delivery_confirmation",
+      "external_id_path": "deliveryId",
+      "status_path": "state",
+      "status_dictionary": {
+        "SIGNED": "delivered",
+        "REJECTED": "failed"
+      },
+      "field_mapping": {
+        "order_id": "orderNo",
+        "shipment_no": "shipmentNo",
+        "carrier": "carrier",
+        "tracking_no": "tracking",
+        "delivered_at": "deliveredAt",
+        "quantity": "qty"
+      },
+      "sample_records": [
+        {
+          "deliveryId": "DELIV-SBX-3001",
+          "orderNo": "CRM-SBX-1001",
+          "shipmentNo": "SHP-SBX-3001",
+          "state": "SIGNED",
+          "carrier": "SF",
+          "tracking": "SF123456",
+          "deliveredAt": "2026-07-03T16:30:00+08:00",
+          "qty": 1200
+        }
+      ]
+    }
+  }
+}

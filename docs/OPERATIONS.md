@@ -1,0 +1,156 @@
+# 运维说明
+
+## 监控指标
+
+- Solver 运行次数、运行耗时、失败率
+- `solver_run.status`、`solver_run.runtime_ms`、`solver_run_log.level`
+- Validator 失败原因分布
+- 平均利用率、平均浪费率
+- 文件预检失败率、转换失败率
+- `file_conversion_job.status` 分布，重点关注 `manual_required` 和 `failed`
+- API 错误率和响应耗时；`/api/metrics` 会按 route 模板、HTTP 方法和状态码类别聚合请求数、5xx 错误数、总耗时、平均耗时和最大耗时
+- `/api/health/ready` 状态、503 次数和失败组件
+- 未读通知数和任务失败/超时通知数
+
+## 认证与密钥
+
+- 开发环境会自动创建默认管理员 `admin@example.com` / `Admin123!`，生产环境必须通过环境变量替换 `DEFAULT_ADMIN_EMAIL` 和 `DEFAULT_ADMIN_PASSWORD`。
+- 默认 RBAC 模板包括 `admin`、`print_planner`、`production_operator`、`solution_approver`、`auditor`、`operations_manager`、`integration_manager`、`benchmark_engineer`；`admin` 会持续补齐全部权限，`production_operator` 会补齐 `solutions:export`，`operations_manager` 会补齐 `solutions:archive`，`integration_manager` 会补齐 `notifications:manage` 以维护消息模板，其余已有同名业务角色不会被 seed 覆盖。
+- 通过 RBAC 管理接口创建用户或重置用户密码时，密码必须为 12-128 字符，并且至少包含一个字母和一个数字；登录接口本身只做凭据校验，不对历史密码重新套用策略。
+- `APP_ENV=production` 会拒绝默认或过短的安全配置和 API 进程后台任务模式：`DATABASE_URL` 不能缺少 PostgreSQL 密码、不能使用 Docker 演示默认 `packaging/packaging` 且数据库密码至少 12 字符，`AUTH_SECRET_KEY` 不能使用 `dev-only-change-me` 且至少 32 字符，`DEFAULT_ADMIN_EMAIL` 不能使用 `admin@example.com`，`DEFAULT_ADMIN_PASSWORD` 不能使用 `Admin123!` 且至少 12 字符，MinIO 模式不能使用 `minioadmin/minioadmin`，`CORS_ORIGINS` 不能包含 `*`，`SECURITY_HEADERS_ENABLED` 不能关闭，`TASK_EXECUTION_BACKEND` 必须为 `celery`，`REDIS_URL` 不能使用开发默认值且必须为 `redis://` 或 `rediss://`。
+- 上线前可运行 `python scripts\production_env_audit.py --write-draft .env.production --output artifacts\production-env-draft-report.json` 从 `.env.production.example` 生成真实 env 草稿；脚本会生成新的 `AUTH_SECRET_KEY` 和 `DEFAULT_ADMIN_PASSWORD`，draft 报告只记录 key 名称。替换数据库、Redis、MinIO、管理员邮箱和前端域名等剩余 `<REPLACE_WITH_...>` 外部占位值后，再运行 `python scripts\production_env_audit.py --env-file .env.production --output artifacts\production-env-audit.json`，留存脱敏 JSON 报告；脚本只读取指定 env 文件和应用默认值，发现非生产 `APP_ENV`、env 语法错误、重复 key、模板占位值、example/template 域名或不安全生产配置时会返回非零退出码。
+- API 默认返回 `X-Content-Type-Options=nosniff`、`X-Frame-Options=DENY`、`Referrer-Policy=no-referrer` 和受限 `Permissions-Policy`；HSTS 默认交给 TLS 反向代理配置，如需 API 返回可设置 `SECURITY_HSTS_ENABLED=true` 和 `SECURITY_HSTS_MAX_AGE_SEC`。
+- API 会接受安全格式的 `X-Request-ID` 或自动生成请求 ID，并在响应头和错误 JSON 的 `request_id` 中回传；`app.request` 访问日志会记录 request_id、HTTP 方法、路径、状态码和耗时，不记录请求体或凭据。排查客户报错时先索取响应头或错误 JSON 中的 `X-Request-ID`/`request_id`；未处理异常只返回安全的 `internal server error`。
+- `ACCESS_TOKEN_TTL_MINUTES` 控制 Bearer Token 有效期，默认 480 分钟。
+- 写入接口和审计查询需要通过 `/api/auth/login` 获取 Bearer Token 后访问。
+- `operation_log`、`sync_task`、`writeback_log`、MES/ERP 快照字段、转换作业读取模型、消息模板和通知收件组 metadata 写入/返回前会递归遮蔽 password、token、secret、api key、authorization、webhook_url、URL 密码和敏感 query 等 payload 字段，但保留 `*_hash`、`*_tail`、`callback_token_rotated_at` 等审计摘要字段；消息实际投递仍使用数据库内的原始模板 metadata 完成 webhook 签名和发送。
+- `/api/operation-logs` 支持 `action`、`target_type`、`target_id`、`actor_id`、`created_from`、`created_to` 和 `limit` 查询参数，操作日志页也提供同样筛选项，用于快速定位安全事件、上线变更和客户回写记录；`operation_log` 已为时间、动作、对象和操作者查询建立索引。
+- 登录失败会写入 `operation_log.action=auth.login_failed`，payload 保留邮箱哈希、客户端地址、失败计数和限流窗口；同一邮箱和客户端在 `LOGIN_RATE_LIMIT_WINDOW_SEC` 内失败达到 `LOGIN_RATE_LIMIT_MAX_FAILURES` 后，登录接口返回 `429` 和 `Retry-After`，并写入 `auth.login_throttled`。
+- 前端收到已登录请求的 `401` 后会清理本地 Token 和用户信息，并跳转登录页；用户重新登录后回到原目标页面。
+- 存储型业务读取也需要 Bearer Token，包括订单、纸张、版图、拼版任务、方案、报告、预览和 Solver 运行日志；匿名访问仅保留给 `/api/health`、`/api/health/ready`、登录、静态 AI 工具 schema 和无状态版图预检。供应商转换回调不使用 Bearer，但必须携带最新 `X-Conversion-Callback-Token`。
+- `/api/health/ready` 可匿名用于负载均衡和编排系统 readiness 探测，但只返回数据库、schema、生产迁移 head 和 storage 组件状态，不暴露业务数据。
+- 用户、角色、权限分配和组织字段通过 `/permissions` 页面或 `/api/rbac/*` 接口维护，需要 `rbac:manage` 权限；`org_unit_code` 用于客户部门/产线/岗位组映射。
+- 规则集版本、启用和执行日志通过 `/rules` 页面或 `/api/rules/*` 接口维护，需要 `rules:manage` 权限；订单评分和候选筛选会记录所用规则集、订单、决策、分数和表达式错误。
+- 规则表达式只允许订单字段、比较/布尔/三元表达式和受控评分函数；导入、内置函数、方法调用、未知字段和多级属性访问会被拒绝。
+- 后端每次请求都会从数据库重新读取当前用户角色和权限，停用账号或调整角色后无需等待旧 Token 过期。
+- 方案校验和提交审批需要 `solutions:write`，审批/驳回需要 `solutions:approve`，生产导出和下载需要 `solutions:export`，备份清单、恢复演练和归档巡检需要 `solutions:archive`。
+- 敏感操作必须提交确认短语：`APPROVE <solution_id>`、`REJECT <solution_id>`、`EXPORT PDF|DXF <solution_id>`、`CANCEL <task_id>`、`RETRY <task_id>`。
+- 生产导出 PDF/DXF 前必须满足 Validator 通过且方案状态为 `approved`，审批记录保存在 `solution_approval` 并写入 `operation_log`。
+- AI Assistant 使用 `ai:use` 权限，只能通过 `/api/ai/tools/execute` 调用白名单后端工具；每次调用都会以 `ai.tool.execute` 写入 `operation_log`，payload 保留工具名、状态、脱敏参数和安全边界。
+- AI 工具可以读取订单、图形、纸张规格，调用后端 Solver/Validator，比较方案并生成报告；`export_pdf`、`export_dxf`、`write_back_crm` 和 `create_nesting_job` 在 AI 边界内返回 `blocked`，生产导出、外部回写和拼版任务创建仍必须走原确认、审批、Adapter 和审计流程。
+- 审批请求、审批结果、后台任务失败/超时、生产异常告警和采购预警会写入 `notification`；`/notifications` 页面可按当前用户查看并标记已读，普通用户不会加载消息模板和收件组管理接口。
+- 消息模板通过 `/notifications` 页面或 `/api/notifications/templates` 维护，需要 `notifications:manage` 权限；前端只有具备该权限才显示模板和收件组管理页签。模板支持站内、webhook 和 SMTP 邮件通道，使用 `{field.path}` 占位符渲染上下文，不执行表达式或任意代码。Webhook 模板可在 `metadata` 中配置 `webhook_url`、`webhook_provider`、`webhook_message_type`、`signature_secret`、`signature_header`、`signature_timestamp_header`、`retry_count` 和 `dedupe_minutes`，用于真实通知网关的 payload 适配、签名认证、失败重试和噪声控制；邮件模板按模板接收权限和收件组解析活跃用户邮箱，并复用 `dedupe_minutes` 和 payload `dedupe_key` 控制重复投递。
+- 通知通道上线证据可从工程根目录运行 `python scripts\notification_channel_audit.py --pack samples\notifications\webhook-channel-pack.json --output artifacts\notification-channel-audit.json` 生成；脚本使用 mocked endpoint 和注入式邮件发送器验证通用 webhook、飞书/Lark、企业微信 payload、HMAC 签名、失败重试、`dedupe_key` 去重、SMTP 邮件收件人解析/主题/事件头/正文和关键事件覆盖率。
+- 收件组通过 `/notifications` 页面或 `/api/notifications/recipient-groups` 维护，可组合直接用户 ID、权限编码和部门编码；部门编码按 `user_account.org_unit_code` 匹配，用于客户组织角色映射和真实收件组治理。
+- `/api/notifications/dispatch` 可按事件类型手动分发模板消息；站内模板按 `recipient_permission_code` 和 `recipient_group_id` 找接收人，未读消息超过 `escalation_after_minutes` 后可追加 `escalation_permission_code` 和 `escalation_group_id` 接收人；每次分发都会写入 `message_dispatch_log`。
+- Validator 按真实放置多边形检查出界、咬口冲突、重叠和最小间距；Geometry Engine 默认使用 Shapely 执行精确距离、包含、差集空白面积、offset 和自交修复，并保留无 Shapely 环境下的确定性回退。
+- 生产导出文件写入 `storage/exports/<solution_id>/`，版本号、生命周期状态、保留期限、校验和、对象后端、对象 key、对象 version_id/ETag/size 和下载路径写入 `solution_export`。
+- `EXPORT_RETENTION_DAYS` 控制导出文件默认保留期限，默认 365 天；同一方案同一导出类型再次导出时，新版本为 `active`，旧 active 版本会标记为 `superseded`。
+- `/api/solutions/{solution_id}/exports/manifest` 输出备份清单，用于核对 `storage_key`、checksum、对象 version_id/ETag/size、当前对象 stat、版本、生命周期、active/archived/expired 统计和对象存在性。
+- `/api/solutions/{solution_id}/exports/recovery-drill` 会逐个读取备份清单中的导出对象并重算 SHA256，返回 `ok`、`missing`、`unreadable`、`checksum_mismatch`、`version_mismatch` 明细，同时可附带过期归档 dry-run 结果；上线切换、备份恢复和 MinIO/NAS 迁移后应保存该报告。
+- 发布或存储切换前可运行 `python scripts\storage_export_audit.py --output artifacts\storage-export-audit.json`，在临时数据库中通过 Storage Adapter 写入临时本地导出对象，生成 adapter contract、manifest、恢复演练、篡改检测、version drift 检测和归档 dry-run 的 JSON 证据。
+- `/api/solutions/exports/archive-expired` 按 `retention_until` 巡检过期导出并标记为 `archived`，支持 `dry_run`；`/api/solutions/exports/archive-expired/async` 会创建 `solution.export_archive_expired` 类型 `work_task`，用于生产环境交给 worker 或定时器执行。
+- 下载生产文件需要 `solutions:export` 权限；生产环境应将本地 `storage/exports` 切换到 MinIO/NAS 并保留对象版本。
+- `STORAGE_BACKEND=local` 时 `storage_key` 是本地路径；`STORAGE_BACKEND=minio` 时 `storage_key` 是 `minio://<bucket>/<object_key>`。生产 local 模式必须把 `STORAGE_ROOT` 指向绝对 NAS/持久卷路径，不能使用开发默认 `storage`。
+- Storage Adapter 统一处理原始版图、`polygon.json`、PDF/DXF 导出文件的写入、读取、存在性检查和下载。
+- 文件转换日志通过 `/conversion-logs` 页面或 `/api/artworks/conversion-jobs` 维护；CDR/AI/PDF 可通过 `EXTERNAL_CONVERSION_SERVICE_URL` 提交独立转换服务，也可由人工在 `/api/artworks/conversion-jobs/{job_id}/result` 回写 normalized SVG/DXF。
+- 转换服务提交接口为 `/api/artworks/conversion-jobs/{job_id}/submit`；提交时会生成并随请求发送 `callback_token`，本地只保存 `callback_token_hash`、`callback_token_tail`、`sla_due_at`、`submit_attempt`、供应商响应和请求元数据，默认 SLA 由 `EXTERNAL_CONVERSION_SLA_MINUTES` 控制。重提供应商服务时可设置 `rotate_callback_token=true`，旧 token 会失效，`callback_token_history` 仅保留旧 token 尾号和轮换时间用于审计；若数据库中仍有早期版本留下的明文 `callback_token`，读取接口会遮蔽该字段，但供应商回调仍按旧 token 兼容校验，便于平滑轮换。
+- 供应商回调接口为 `/api/artworks/conversion-jobs/{job_id}/callback`，必须携带最新 `X-Conversion-Callback-Token`，鉴权通过后按 result 请求写入 `artwork_version.normalized_storage_key`，并在 `parse_polygon=true` 时立即生成 `polygon_asset` 和 `polygon.json`。失败回调可提交 `metadata.vendor_error_code`/`error_code`、`metadata.vendor_error_message` 和可选 `metadata.vendor_error_map`；`unsupported_format`、`missing_dieline`、`password_protected`、`invalid_file`、`corrupt_file`、`font_missing`、`license_required`、`vector_export_required` 会自动归入 `manual_required`，未知或基础设施类异常保持 `failed`。
+- 转换 SLA 巡检接口为 `/api/artworks/conversion-jobs/sla/check`，需要 `artworks:write` 权限；逾期 queued 作业会标记为 `overdue`，写入 `metadata.overdue_at`，并向拥有 `artworks:write` 的用户发送 `artwork.conversion.overdue` 站内通知。
+- 转换供应商上线证据可从工程根目录运行 `python scripts\conversion_supplier_audit.py --output artifacts\conversion-supplier-audit.json` 生成；脚本使用 mocked 供应商 endpoint、临时数据库和临时对象目录验证提交认证与 multipart 原文件、callback token hash 落库/明文不落库、token 轮换、旧 token 拒绝、normalized SVG/Polygon 回写、供应商异常码映射和 SLA 逾期巡检。
+- MinIO 模式需要配置 `MINIO_ENDPOINT`、`MINIO_BUCKET`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`，启动时按需创建 bucket；生产环境必须替换 `minioadmin/minioadmin`。
+- 外部系统和 Adapter 配置通过 `/integrations` 页面或 `/api/adapters/*` 接口维护，需要 `integrations:write` 权限；配置版本写入 `adapter_config`，返回前会脱敏 token/key/password/secret。上线前应执行 `/api/adapters/readiness?required_system_types=crm,mes,erp`，报告会按 `ready`、`warning`、`blocked` 汇总必需系统、激活配置、字段验收、组织编码验收、数据字典签核、生产模式、重试策略、通知模板和失败重试队列。客户样本包进入真实环境前，可运行 `python scripts\customer_sandbox_audit.py --pack samples\integrations\customer-sandbox\adapter-sandbox-pack.json --output artifacts\customer-sandbox-audit.json` 生成离线验收报告；报告会先校验 `pack_contract`，要求 `schema_version=1`、CRM/MES/ERP 必需样本、显式 `system_type`、ERP 库存/交付 `domain_target`、本地样本记录、字段映射、状态字典和组织/收件组引用完整，结构不合格会在写入临时数据库前失败。报告失败表示字段样本、签核或 readiness blocker 未满足，warning 需要上线评审明确接受或修复。
+- Adapter 配置校验只做安全的字段和模式检查，不主动访问客户生产 API；字段验收通过 `/api/adapters/configs/{config_id}/field-acceptance` 或系统集成页执行，只读取配置里的 `pages`、`records` 或 `sample_records`，用于检查 CRM 订单必填字段、MES/ERP 领域字段、映射路径、状态字典、组织编码和回写上下文路径。配置 `organization_acceptance.required_org_unit_codes` 后，字段验收会检查这些编码是否存在于活跃用户 `org_unit_code`，并检查活跃通知收件组 `department_codes` 是否覆盖；配置 `required_recipient_group_names` 后，还会确认收件组存在且能解析到活跃用户。数据字典签核通过 `/api/adapters/configs/{config_id}/dictionary-signoff` 执行，确认短语为 `SIGNOFF <config_id>`；签核会重新跑字段验收，必填缺口会阻止签核，未映射样本状态必须在 `accepted_unmapped_statuses` 中明确接受。
+- CRM 同步默认使用 `pages`/`sample_records`，只有配置 `mode=http` 或 `source=http` 时才访问远程 API。CRM 同步支持 `field_mapping`、`records_path`、Bearer/API Key/Basic 认证、分页、基础重试、增量游标和 `dry_run`，可把远程或样本数据映射为生产订单并写入 `sync_task`。
+- CRM 增量同步配置 `incremental=true` 后，可用 `incremental_cursor_param` 指定请求参数、`incremental_cursor_path`/`record_cursor_path` 指定新游标来源；成功且非 dry-run 的同步会把 `state.cursor`、`last_success_at` 和最近 HTTP 状态写回 `adapter_config.config.state`。
+- MES/ERP 同步通过 `POST /api/adapters/{mes|erp}/sync` 写入外部记录快照；配置 `records_path`、`external_id_path`、`status_path`、`entity_type`、`field_mapping` 和 `inbound_status_dictionary` 后，可把客户记录归一化为 `sync_task.payload.records`，并复用 HTTP 分页、重试和增量游标；`sync_task.payload.records[*].fields` 和持久化领域快照 `fields` 会保存脱敏后的审计字段。
+- MES/ERP 正式同步且 `dry_run=false` 时，可配置 `domain_target=production_schedule|inventory_snapshot|delivery_confirmation` 把归一化记录 upsert 到 `production_schedule_entry`、`inventory_snapshot` 或 `delivery_confirmation`；`domain_target=auto` 会按 `entity_type` 的 `work_order`、`stock`、`shipment` 等别名归档。dry run 只保留快照，不写领域表。
+- 拼版任务物料放行通过 `GET /api/nesting/jobs/{job_id}/material-readiness` 执行，需要 `nesting:write` 权限；接口按 Job 中的订单物料汇总需求，并用 `inventory_snapshot.available_qty - reserved_qty` 计算净可用量，返回 `ready`、`blocked` 或 `unknown`。
+- 物料放行检查会排除状态为 blocked、locked、frozen、quarantine、quality_hold、unavailable、expired、scrapped 等不可用库存；客户 ERP 状态字典上线前，应先确认 `status_dictionary` 是否会把可用、质检、冻结和报废库存映射到一致语义。
+- 采购预警通过 `POST /api/nesting/jobs/{job_id}/procurement-alerts/check` 执行，需要 `nesting:write` 权限；接口只对真实 `shortage` 物料生成采购建议，建议采购量为缺口乘以 `1 + safety_stock_rate` 后再与 `min_purchase_qty` 取较大值。
+- 采购预警会向拥有 `nesting:write` 或 `integrations:write` 权限的用户发送 `procurement.material_shortage` 站内通知；同一个 Job、物料、缺口和订单集合在 `dedupe_minutes` 窗口内不会重复通知。
+- 拼版任务生产检查通过 `GET /api/nesting/jobs/{job_id}/production-readiness` 执行，需要 `nesting:write` 权限；接口复用物料放行结果，并按 Job 订单匹配 `production_schedule_entry.order_id/job_id` 和 `delivery_confirmation.order_id`，返回 `overall_status`、`schedule_status` 和 `delivery_status`。
+- 生产检查中的 `overall_status` 只由物料和排程决定：物料短缺或排程 blocked 会返回 `blocked`，物料或排程缺失会返回 `unknown`，排程 scheduled/in_progress/completed 且物料 ready 时返回 `ready`；交付状态用于闭环跟踪，不自动阻断生产放行。
+- MES 排程状态建议通过状态字典归一为 scheduled、in_progress、completed、blocked；ERP 交付状态建议归一为 delivered、returned、failed 等可判定语义，否则生产检查会以 `unknown` 或 `partial` 保守展示。
+- 生产异常告警通过 `POST /api/nesting/jobs/{job_id}/production-alerts/check` 执行，需要 `nesting:write` 权限；物料短缺、物料证据缺失、排程 blocked/missing/unknown、交付 blocked/partial/missing/unknown 会生成 `production.*` 告警，并向拥有 `nesting:write` 权限的用户发送站内通知。
+- 生产告警默认使用 `TASK_ALERT_DEDUPE_MINUTES` 作为去重窗口，也可在请求体传入 `dedupe_minutes` 覆盖；同一个 Job、同一告警类型、同一状态和同一订单集合在窗口内不会重复创建通知。
+- 异常回写通过 `POST /api/nesting/jobs/{job_id}/exception-writebacks/run` 执行，需要 `integrations:write` 权限；默认 `dry_run=true`，会把物料短缺转换为 ERP `procurement_request`，把排程异常转换为 MES `nesting_job` 状态，把交付异常转换为 ERP `delivery_closure`，并统一写入 `writeback_log`。
+- 异常回写正式访问客户 API 前，必须在对应 ERP/MES Adapter 中配置 `writeback.mode=http` 或 `writeback.source=http`、目标 endpoint、认证、状态字典和确认字段；未配置真实 HTTP writeback 或保持 dry-run 时只写本地回写日志。
+- 失败的 CRM/MES/ERP 同步任务会在 `sync_task.payload` 中标记 `retryable`、`failure_stage` 和错误明细；通过 `GET /api/adapters/sync-tasks/retry-queue` 查看待处理失败，通过 `POST /api/adapters/sync-tasks/{task_id}/retry` 按原 Adapter 配置版本重试。
+- CRM/MES/ERP 回写通过 `POST /api/adapters/{crm|mes|erp}/writeback` 写入 `writeback_log`；默认 dry-run，只在配置 `writeback.mode=http` 或 `writeback.source=http` 且请求/配置关闭 dry-run 时访问远端。`writeback.endpoint` 支持 `{target_id}`，`writeback.method` 支持 `POST`/`PUT`/`PATCH`，`writeback.field_mapping` 可把 `target_id`、`status`、`confirmed_at` 和请求 `payload.*` 映射到客户字段，`writeback.confirmation_path` 用于从远端响应确认成功；`writeback_log.payload.request_body` 和远端响应摘要会保存脱敏后的审计数据。
+- 回写可配置 `writeback.status_dictionary` 或 `writeback_status_dictionary` 把内部状态映射为客户状态码；同步可配置 `inbound_status_dictionary` 把客户状态码映射为内部状态。所有映射前后的状态都保留在审计 payload 中。
+- Solver 注册表通过 `/solvers` 页面或 `/api/solvers/registry` 接口维护，需要 `solvers:manage` 权限；求解运行前会检查 `solver_registry.enabled` 和 Adapter 配置状态，商业/外部 Solver 默认停用，仍是 `external-adapter-stub-*` 版本时不能启用或运行。
+- Solver 治理上线证据可从工程根目录运行 `python scripts\solver_governance_audit.py --output artifacts\solver-governance-audit.json` 生成；脚本使用临时数据库验证注册表种子、外部 stub 启用阻断、禁用许可证阻断、运行时 stub 防线、Rectpack 确定性输出和 Benchmark 持久化。
+- Benchmark 案例和运行历史通过 `/benchmark` 页面或 `/api/benchmark/*` 接口维护，需要 `benchmark:write` 权限；运行结果写入 `benchmark_run`，用于比较 Solver 利用率、耗时和 Validator 状态。
+- 本地开发默认 `TASK_EXECUTION_BACKEND=background`，API 进程会用 FastAPI BackgroundTasks 执行 `work_task`。
+- Docker/生产必须设置 `TASK_EXECUTION_BACKEND=celery` 和非开发默认的 `REDIS_URL`，API 只入队，`worker` 服务通过 Redis 执行 `packaging_nesting.execute_work_task`，`scheduler` 服务通过 Celery beat 周期触发 `packaging_nesting.enqueue_scheduled_maintenance`。
+- `TASK_STALE_AFTER_SEC` 控制 running 任务心跳超时阈值，默认 300 秒。
+- `TASK_SOFT_TIME_LIMIT_SEC`、`TASK_HARD_TIME_LIMIT_SEC` 和 `TASK_WORKER_PREFETCH_MULTIPLIER` 控制 Celery soft/hard time limit 与 worker 预取，soft timeout 会尽量把 `work_task` 标记为 `timed_out`。
+- Benchmark 回归运行可通过 `/api/benchmark/cases/{case_id}/runs/async` 创建 `benchmark.run` 任务，默认受 `BENCHMARK_TASK_TIMEOUT_SEC` 控制。
+- `/api/tasks` 需要 `audit:read` 权限，用于排查 queued/running/completed/failed/cancelled/timed_out 任务、尝试次数、超时、进度、心跳、结果和错误。
+- `/api/metrics` 需要 `audit:read` 权限，用于监控 API 请求数、5xx 错误数和响应耗时；指标只使用低基数 route 模板、方法和状态码类别，不记录请求体、查询参数或凭据。
+- `/api/tasks/metrics` 需要 `audit:read` 权限，用于监控 total/active/queued/running/stale_running 等队列水位。
+- `/api/tasks/alerts/check` 需要 `audit:read` 权限，会按 `TASK_ALERT_ACTIVE_THRESHOLD`、`TASK_ALERT_QUEUED_THRESHOLD`、`TASK_ALERT_STALE_RUNNING_THRESHOLD` 和 `TASK_ALERT_FAILURE_THRESHOLD` 评估队列水位、心跳超时和失败/超时数量。
+- `/api/tasks/maintenance/schedule` 需要 `audit:read` 权限，用于查看 `MAINTENANCE_SCHEDULER_ENABLED`、`MAINTENANCE_INTERVAL_MINUTES` 和维护检查项；`/api/tasks/maintenance/run` 需要 `tasks:manage` 权限，会手动执行过期导出归档、转换 SLA 巡检和任务告警检查，并写入 `operation_log`。
+- 周期维护由 `MAINTENANCE_SCHEDULER_ENABLED=true` 开启，`MAINTENANCE_INTERVAL_MINUTES` 控制间隔，`MAINTENANCE_ARCHIVE_EXPIRED_EXPORTS`、`MAINTENANCE_CONVERSION_SLA_CHECK`、`MAINTENANCE_TASK_ALERT_CHECK` 分别控制归档、转换 SLA 和任务告警检查。每次周期触发都会创建 `maintenance.run` 类型 `work_task`，便于在运行监控页追踪结果。
+- 任务告警默认会向拥有 `audit:read` 权限的用户写入站内通知，并按 `TASK_ALERT_DEDUPE_MINUTES` 在冷却窗口内去重；如存在匹配告警 code 的站内消息模板，会使用模板渲染标题和正文。
+- 配置 `EXTERNAL_ALERT_WEBHOOK_URL` 后，任务告警会向外部 webhook 推送 `work_task.alert` JSON 事件；也可为具体事件创建 `webhook` 消息模板并在 `metadata.webhook_url` 指定目标。模板 webhook 支持 `webhook_provider=generic|feishu|lark|wecom|wechat_work`，其中飞书/Lark 使用文本消息 payload，企业微信默认使用 markdown payload；支持 `signature_secret` 生成 `X-Packaging-Signature` 和 `X-Packaging-Timestamp`，支持 `retry_count` 即时重试，支持 `dedupe_minutes` 结合 payload `dedupe_key` 在冷却窗口内跳过重复推送；未配置 endpoint 时接口会返回 `external_push.status=skipped` 或分发日志 `status=skipped`。创建 `email` 消息模板并配置 `SMTP_HOST`、`SMTP_FROM_EMAIL` 等 SMTP 环境变量后，系统会向解析出的活跃用户邮箱发送同一事件正文。
+- 正式切入客户通知网关前，应先保存 `scripts/notification_channel_audit.py` 的 JSON 报告，再在客户沙箱中补充平台响应码、关键词/签名规则、SMTP 投递策略和消息展示效果验收。
+- `/api/tasks/{task_id}/cancel` 和 `/api/tasks/{task_id}/retry` 需要 `tasks:manage` 权限；取消 running 任务为协作式取消，求解、Benchmark 和导出会在关键阶段间检查取消请求，尽量避免在取消后继续写入方案、Benchmark Run 或生产导出。
+
+## 数据库迁移
+
+- 生产环境禁止使用 SQLite、Docker 演示数据库密码和开发模式的隐式 `create_all` 建表，初始化或升级必须执行 `cd backend; alembic -c alembic.ini upgrade head`。
+- `APP_ENV=production` 会在 API 启动时校验表、列和 `alembic_version` 是否等于当前仓库 head；缺表、缺列或迁移版本未到 head 会阻止启动，避免生产环境误用开发模式建表或跳过迁移。
+- 发布前必须运行 `tests/backend/test_migrations.py`，该测试会在临时 SQLite 数据库执行 Alembic `upgrade head` 并校验迁移后的表和列与 SQLAlchemy 模型一致。
+- 发布前建议从工程根目录运行 `python scripts\release_preflight.py` 并留存输出；脚本会覆盖迁移、健康检查、生产配置、客户沙箱、集成/审计脱敏、Docker Compose、仓库忽略规则、鉴权面、本地交付证据包生成与完整性验证、前端构建和 API 冒烟等不依赖客户真实沙箱的门禁，API 冒烟默认自动选择可用本地端口，完整后端回归可加 `--full-backend`。
+- 客户验收或上线窗口建议使用 `python scripts\release_preflight.py --report-path artifacts\release-preflight.json --inventory-path artifacts\dependency-inventory.json`，把后端测试、证据包生成与验证、前端构建、API 冒烟实际端口、依赖/许可证摘要、耗时、退出码、失败原因和清理结果固化为机器可读 JSON 证据；证据包 gate 的 payload 会嵌入 manifest/verification 摘要、artifact 相对路径、字节数和 SHA-256；需要固定冒烟端口时加 `--smoke-port 8030`，需要把 preflight 证据包写到指定目录时加 `--evidence-output-dir artifacts\release-evidence`，需要把生产 env 审计纳入门禁时加 `--env-file .env.production --require-production-env`，需要把依赖人工复核签核纳入门禁时加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，需要把真实客户沙箱、供应商、存储和生产部署验收纳入门禁时加 `--external-acceptance-file artifacts\external-acceptance.json --require-external-acceptance`。
+- Preflight 报告交付前建议运行 `python scripts\verify_release_preflight.py --report artifacts\release-preflight.json --output artifacts\release-preflight-verification.json`；脚本会离线复核报告 `passed` 状态、必需 gate、证据包 payload、API 冒烟、pycache 清理和依赖摘要。上线策略要求依赖人工复核项清零时，应在 preflight 或 verifier 上追加 `--fail-on-dependency-review`，让该项直接变成阻断；若允许人工签核放行，则先用 `python scripts\dependency_review_template.py --inventory artifacts\dependency-inventory.json --output artifacts\dependency-review.json` 生成待签核模板，交付负责人或法务补齐 `approved` 决策和原因后，再用 `python scripts\dependency_review_audit.py --inventory artifacts\dependency-inventory.json --review-file artifacts\dependency-review.json --require-review-file --output artifacts\dependency-review-audit.json` 校验复核文件，并把同一文件传给 preflight 或 evidence pack。
+- 本地上线证据包建议使用 `python scripts\release_evidence_pack.py --output-dir artifacts\release-evidence --env-file .env.production` 生成；脚本会把生产 env 脱敏审计、仓库忽略规则审计、客户沙箱样本验收、通知通道验收、存储导出恢复演练、转换供应商验收、Solver 治理验收、外部验收签核、依赖/许可证清单和依赖复核审计写入同一目录，并用 `release-evidence-pack.json` 汇总各项状态、文件字节数和 SHA-256，便于交付后核对完整性。每个生成报告都会附带 `sensitive_scan`，输出前会遮蔽 password、token、secret、api key、webhook URL 和 URL 密码/敏感 query；发现未脱敏敏感值时对应 artifact 和整个证据包会失败。没有生产 env 文件时可省略 `--env-file`，没有真实外部验收文件时外部验收签核会标记为 skipped；若上线流程要求必须提供则追加 `--require-production-env`，若要求依赖复核签核则追加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，若要求真实外部验收签核则追加 `--external-acceptance-file artifacts\external-acceptance.json --require-external-acceptance`。
+- 证据包默认包含 `deployment-compose-audit.json` 和 `repository-hygiene-audit.json`，用于离线复核 Compose 服务、healthcheck、依赖顺序、镜像 tag、后端 MinIO/Celery 环境、后端镜像 `.[optimization]` 依赖安装面、前端 lockfile 安装、本地演示凭据边界，以及 `.gitignore` 对本地密钥、运行数据库、日志、tmp 和 artifacts 的忽略规则；`APP_ENV=production` 下仍出现 `packaging/packaging` 或 `minioadmin/minioadmin` 会变成阻断项。
+- 证据包交付、上传或归档后建议运行 `python scripts\verify_release_evidence_pack.py --manifest artifacts\release-evidence\release-evidence-pack.json --output artifacts\release-evidence\release-evidence-verification.json`；脚本按 manifest 所在目录和 artifact `relative_path` 重新计算字节数与 SHA-256，带文件证据的 skipped 可选报告也会校验完整性；缺失、篡改、路径不安全或证据包状态未通过时返回非零退出码。
+- 完成 preflight 离线复核和证据包完整性复核后，建议运行 `python scripts\release_handoff_bundle.py --preflight-report artifacts\release-preflight.json --preflight-verification artifacts\release-preflight-verification.json --output artifacts\release-handoff-bundle.json` 生成顶层交付索引；该索引会汇总 preflight、preflight verifier、证据包 manifest、证据包 verifier、证据包内各项 JSON artifact、依赖清单和依赖复核审计的路径、字节数、SHA-256 和摘要状态。交付索引复制、上传或归档后，再运行 `python scripts\verify_release_handoff_bundle.py --manifest artifacts\release-handoff-bundle.json --output artifacts\release-handoff-verification.json` 校验顶层索引完整性；如果在新的交付目录中验收，追加 `--base-dir <交付目录>` 解析相对路径。正式 go-live 前再运行 `python scripts\go_live_readiness_audit.py --handoff-manifest artifacts\release-handoff-bundle.json --handoff-verification artifacts\release-handoff-verification.json --output artifacts\go-live-readiness.json`；它会要求 handoff verification、仓库卫生审计、生产 env 审计、外部验收签核、依赖复核审计和 release image 依赖安装状态全部满足上线条件，缺失 handoff verifier 或 verifier 的 `manifest_path` 指向其他 handoff manifest 都会成为 blocker。若仍失败，运行 `python scripts\go_live_remediation_packet.py --go-live-report artifacts\go-live-readiness.json --output-dir artifacts\go-live-remediation`，按补证包中的 production env draft、外部验收模板和 `run-go-live-evidence.ps1` 补齐真实证据后重跑；该脚本会检查每个原生 `python` 命令的退出码，并在第一处失败时停止。补齐后可先运行 `python scripts\go_live_remediation_packet.py --audit-packet artifacts\go-live-remediation --output artifacts\go-live-remediation\go-live-remediation-readiness.json`，它会刷新外部证据大小/SHA-256 并写出 readiness 报告；若真实输入缺失或外部证据刷新失败，readiness 会清理补证包目录内过期的生产 env/外部验收审计输出；只有状态为 `ready` 时再继续较重的最终门禁。
+- 正式镜像依赖证据应使用 `python scripts\release_image_dependency_audit.py --inventory-output artifacts\dependency-inventory-release-image.json --review-output artifacts\dependency-review-audit-release-image.json --output artifacts\release-image-dependency-audit.json` 生成；该脚本在后端 Docker release image 内运行依赖清单和依赖复核审计，避免用开发机缺包状态判断 go-live。本地 preflight/verifier 若提示 review-required 项是由当前机器缺少 release-blocking package 造成，应使用 release image 清单覆盖，而不是作为真实许可证待审处理。生成顶层交付索引时追加 `--dependency-inventory artifacts\dependency-inventory-release-image.json --dependency-review-audit artifacts\dependency-review-audit-release-image.json --release-image-dependency-audit artifacts\release-image-dependency-audit.json`，让 handoff 和 go-live readiness 使用正式镜像证据并校验镜像依赖审计总报告已留存。
+- 同一上线证据包中应加入 `python scripts\production_env_audit.py --write-draft .env.production --output artifacts\production-env-draft-report.json` 生成草稿后的补齐记录，以及 `python scripts\production_env_audit.py --env-file .env.production --output artifacts\production-env-audit.json` 的最终结果，证明目标生产 env 文件通过启动前安全规则且报告中无明文密码、token 或 secret。
+- 存储验收证据包中应加入 `python scripts\storage_export_audit.py --output artifacts\storage-export-audit.json` 的结果，确认本地 Storage Adapter contract、对象元数据、恢复演练和归档 dry-run 均通过；真实 MinIO/NAS 切换后还应保存具体方案的 `/api/solutions/{solution_id}/exports/recovery-drill` 报告。
+- 转换供应商验收证据包中应加入 `python scripts\conversion_supplier_audit.py --output artifacts\conversion-supplier-audit.json` 的结果；真实供应商沙箱切换后还应补充供应商平台响应码、回调头、异常码清单、失败重试间隔和 SLA 统计。
+- Solver 治理验收证据包中应加入 `python scripts\solver_governance_audit.py --output artifacts\solver-governance-audit.json` 的结果；商业 Solver 切换后还应补充真实合同版本、许可证确认、Adapter 服务健康检查和 Benchmark 对比报告。
+- 真实外部验收签核应使用 `python scripts\external_acceptance_audit.py --write-template artifacts\external-acceptance.draft.json` 生成 draft 模板，补齐 `customer_integration_sandbox`、`notification_channel_sandbox`、`conversion_supplier_sandbox`、`storage_backend_cutover`、`production_deployment` 五个 area 的真实环境、签核人、带时区的 ISO 签核时间、`status=passed`、验收摘要、`ticket`、真实证据文件相对路径和证据 `description` 后，用 `python scripts\external_acceptance_audit.py --refresh-evidence-metadata artifacts\external-acceptance.draft.json --refreshed-output artifacts\external-acceptance.json --output artifacts\external-acceptance-refresh-report.json` 自动写入大小和 SHA-256，再用 `python scripts\external_acceptance_audit.py --acceptance-file artifacts\external-acceptance.json --require-acceptance-file --output artifacts\external-acceptance-audit.json` 校验并纳入证据包。
+
+## 备份
+
+- PostgreSQL 每日全量备份，关键客户上线后增加 WAL 归档。
+- MinIO 原始文件、normalized.svg/dxf、polygon.json、solution.json、export.pdf、export.dxf 分桶或前缀管理。
+- 规则集、Solver 配置、Adapter 配置需要版本化。
+- `solver_registry.version`、`enabled`、`license_policy` 必须纳入上线审批；商业或外部 Solver 启用前需要确认 Adapter、许可证和输出验证策略，运行 `scripts/solver_governance_audit.py` 留存 JSON 证据，并把 `external-adapter-stub-*` 替换为真实合同版本或服务版本。
+- 发布前应运行 `python scripts\release_inventory.py --output artifacts\dependency-inventory.json` 或通过 preflight 的 `--inventory-path` 生成完整依赖/许可证清单；`review_required` 项包括 GPL/AGPL/LGPL/SSPL/BUSL/未知许可证等，必须由交付负责人或法务确认后再进入客户环境。可用 `python scripts\dependency_review_template.py --inventory artifacts\dependency-inventory.json --output artifacts\dependency-review.json` 生成与当前清单匹配的待签核模板。复核签核文件使用 `schema_version=1`，每个 `entries` 条目必须匹配当前清单的 `ecosystem/name/scope/version/license`，`decision=approved` 且 `reason` 非空；`reviewed_at` 和可选 `expires_at` 必须是带时区的 ISO datetime，`expires_at` 过期或版本/许可证不匹配时，`scripts/dependency_review_audit.py` 会返回失败。
+- `benchmark_case` / `benchmark_run` 应随版本发布保留，用于 Solver 升级、规则变更和几何算法改动后的回归比较。
+- `file_conversion_job` 和 `artwork_version` 应随原始版图一起备份，尤其保留 `file_conversion_job.metadata_json` 中的 callback token hash/尾号、token 轮换历史、SLA 截止时间、提交次数、供应商响应、回调状态、供应商异常码映射和逾期标记，用于追溯专有格式转换责任、失败原因、normalized 产物和外部服务处理记录。
+- `adapter_config.version`、`is_active`、`validation_status` 和 `config.dictionary_signoff` 必须纳入备份和回滚检查；切换配置版本前建议先执行 `/api/adapters/configs/{config_id}/test`、`/api/adapters/configs/{config_id}/field-acceptance`、必要的数据字典签核以及 `/api/adapters/readiness`。真实 HTTP 且非 dry-run 的状态字典配置在未签核前不能通过激活接口上线。
+- `message_template`、`notification_recipient_group` 和 `message_dispatch_log` 应随业务库一起备份；客户上线前应导出关键事件模板和收件组，确认 webhook URL、接收权限、接收组、升级权限、升级组和模板字段路径符合客户通知制度。
+- `production_schedule_entry`、`inventory_snapshot` 和 `delivery_confirmation` 是 MES/ERP 快照落地后的运营表，应与 `sync_task` 一起备份；这些表已参与拼版生产检查，客户状态字典调整时必须检查历史状态含义、物料放行口径、排程口径和交付闭环口径。
+- 定期运行导出归档 dry-run 和 `/api/solutions/{solution_id}/exports/recovery-drill`，确认过期范围、对象存在性、checksum 和对象 version_id/ETag 无误后再正式归档；归档只更新 `solution_export.lifecycle_status`，不删除对象，便于 MinIO/NAS 版本和外部备份继续保留。
+- 当前开发环境会在首次 DB 会话时自动 `create_all`，生产环境必须使用 Alembic 迁移并禁止隐式建表。
+
+## 回滚
+
+- Alembic 迁移必须成对提供 downgrade。
+- Solver 新版本必须保留版本号、参数和随机种子，确保历史方案可回放。
+- 每次求解必须能从 `solver_run` 找到输入 Job、Solver 版本、运行日志、输出 Solution 和 Validator 报告。
+- 每次生产放行必须能从 `solution_approval` 找到提交人、审批人、审批意见和审批时的方案快照。
+- 每条审批通知和任务异常通知必须能从 `notification` 找到接收人、事件类型、目标对象、读状态和时间。
+- 每次模板消息分发必须能从 `message_dispatch_log` 找到模板、事件类型、通道、目标对象、分发状态、接收人数、外部推送结果和错误明细。
+- 每次异步求解、Benchmark 运行或异步导出必须能从 `work_task` 找到任务类型、目标、操作者、尝试次数、超时、取消请求、进度、心跳、结果或失败原因。
+- 每次订单评分和候选筛选必须能从 `rule_execution_log` 找到规则集版本、订单、是否通过、拒绝原因、评分明细和表达式错误。
+- 每次 Adapter 字段验收必须能从 `operation_log` 找到配置版本、系统类型、验收状态、样本数、必填缺口、映射问题、状态字典问题和逐项检查明细。
+- 每次外部同步和结果回写必须能从 `sync_task` 或 `writeback_log` 找到外部系统、Adapter 配置版本、目标对象、dry-run 标记、游标输入/输出、映射/导入数量、归一化记录快照、状态字典映射、HTTP 状态、远端确认字段、错误明细、重试父任务和结果状态。
+- 每次拼版任务物料放行检查必须能从 `operation_log` 找到操作者、Job、整体状态、物料条目数和缺失订单数量；如状态为 `unknown`，应先补齐订单或 ERP 库存快照再进入生产放行。
+- 每次拼版任务采购预警检查必须能从 `operation_log` 找到建议数量、通知数量和涉及物料；每条采购预警通知 payload 会保留建议采购量、缺口、关联订单和当次物料放行快照。
+- 每次拼版任务生产检查必须能从 `operation_log` 找到操作者、Job、物料状态、排程状态、交付状态和订单数量；如排程或交付为 `unknown`/`missing`，应检查 MES/ERP 同步配置、字段映射和状态字典。
+- 每次拼版任务生产异常告警检查必须能从 `operation_log` 找到告警数量、通知数量和告警 code；每条通知 payload 会保留 dedupe key、告警明细和当次生产检查快照。
+- 每次拼版任务异常回写必须能从 `operation_log` 找到 dry-run 标记、动作数量、完成/跳过/失败数量和请求状态；每个外部动作必须能从 `writeback_log` 找到 Adapter 配置版本、request_body、确认状态和错误明细。
+- 每次 Solver 注册表变更必须能从 `operation_log` 找到操作者、Solver 名称、版本、启用状态和许可证策略。
+- 每次 AI 工具执行必须能从 `operation_log` 找到操作者、工具名、执行状态、脱敏参数和 `ai_generated_coordinates=false` 等安全标记；若状态为 `blocked`，应确认用户改走对应审批、导出或 Adapter 工作流。
+- 每次异常登录峰值必须能从 `operation_log` 找到 `auth.login_failed` 和 `auth.login_throttled`，并结合客户端地址、邮箱哈希、失败计数和 `Retry-After` 判断是否需要封禁来源或提升反向代理限流。
+- 每次 Benchmark 运行必须能从 `benchmark_run` 找到案例、Solver、利用率、浪费率、运行耗时、Validator 是否通过和失败原因。
+- 每次专有格式转换处理必须能从 `file_conversion_job` 找到源文件、源格式、目标格式、状态、处理日志和更新时间；成功转换还必须能从 `artwork_version` 找到 normalized SVG/DXF storage_key、checksum、转换作业 ID 和 Polygon 解析结果。

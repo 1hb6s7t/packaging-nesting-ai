@@ -1,0 +1,4 @@
+order_id,product_name,category,is_repeat_order,quote_amount,contacted,quantity,material,thickness,allowed_rotations,min_gap_mm,bleed_mm
+CSV001,彩盒彩盒 A,box,true,6800,true,1200,white_card,350gsm,"0,90,180,270",3,2
+CSV002,礼盒彩盒 B,box,false,4200,true,800,white_card,350gsm,"0,180",3,2
+

@@ -1,0 +1,40 @@
+{
+  "job_id": "job_sample",
+  "sheet": {
+    "sheet_id": "sheet_889_1194",
+    "width": 889,
+    "height": 1194,
+    "margin_top": 10,
+    "margin_right": 10,
+    "margin_bottom": 10,
+    "margin_left": 10,
+    "gripper_mm": 12,
+    "material": "white_card",
+    "thickness": "350gsm",
+    "cost_per_sheet": 4.2
+  },
+  "candidate_items": [
+    {
+      "item_id": "item_1",
+      "order_id": "O001",
+      "polygon": {
+        "shape_id": "shape_1",
+        "outer": [[0, 0], [120, 0], [120, 80], [0, 80]]
+      },
+      "priority_score": 0.9,
+      "min_gap_mm": 3,
+      "bleed_mm": 2
+    },
+    {
+      "item_id": "item_2",
+      "order_id": "O002",
+      "polygon": {
+        "shape_id": "shape_2",
+        "outer": [[0, 0], [160, 0], [160, 120], [0, 120]]
+      },
+      "priority_score": 0.7,
+      "min_gap_mm": 3,
+      "bleed_mm": 2
+    }
+  ]
+}

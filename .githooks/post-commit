@@ -1,0 +1,21 @@
+#!/bin/sh
+set -u
+
+if [ "${SKIP_AUTO_PUSH:-}" = "1" ]; then
+  echo "auto-push skipped because SKIP_AUTO_PUSH=1"
+  exit 0
+fi
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [ -z "$branch" ]; then
+  echo "auto-push skipped: detached HEAD"
+  exit 0
+fi
+
+if ! git remote get-url origin >/dev/null 2>&1; then
+  echo "auto-push skipped: origin remote is not configured"
+  exit 0
+fi
+
+echo "auto-push: pushing $branch to origin"
+git push origin "HEAD:$branch"
