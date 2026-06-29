@@ -85,22 +85,22 @@ def test_verify_release_evidence_pack_detects_tampered_artifact(tmp_path: Path) 
     assert "artifact sha256 mismatch" in failed_check["errors"]
 
 
-def test_verify_release_evidence_pack_checks_generated_skipped_artifact_files(tmp_path: Path) -> None:
+def test_verify_release_evidence_pack_checks_generated_optional_artifact_files(tmp_path: Path) -> None:
     evidence_module = load_module("release_evidence_pack_for_skipped_tamper_verify", EVIDENCE_SCRIPT_PATH)
     verify_module = load_module("verify_release_evidence_pack_for_skipped_tamper", VERIFY_SCRIPT_PATH)
     output_dir = tmp_path / "evidence"
 
     pack = evidence_module.build_release_evidence_pack(output_dir=output_dir)
     by_name = {item["name"]: item for item in pack["artifacts"]}
-    assert by_name["dependency_review_audit"]["status"] == "skipped"
-    artifact_path = output_dir / by_name["dependency_review_audit"]["relative_path"]
+    assert by_name["external_acceptance_audit"]["status"] == "skipped"
+    artifact_path = output_dir / by_name["external_acceptance_audit"]["relative_path"]
     artifact_path.write_text(artifact_path.read_text(encoding="utf-8") + "\n{}", encoding="utf-8")
 
     report = verify_module.verify_release_evidence_pack(output_dir / "release-evidence-pack.json")
 
     assert report["status"] == "failed"
-    assert report["summary"]["failed_artifacts"] == ["dependency_review_audit"]
-    failed_check = next(item for item in report["checks"] if item["name"] == "dependency_review_audit")
+    assert report["summary"]["failed_artifacts"] == ["external_acceptance_audit"]
+    failed_check = next(item for item in report["checks"] if item["name"] == "external_acceptance_audit")
     assert failed_check["artifact_status"] == "skipped"
     assert "artifact size mismatch" in "\n".join(failed_check["errors"])
     assert "artifact sha256 mismatch" in failed_check["errors"]
