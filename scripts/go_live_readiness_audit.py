@@ -23,6 +23,14 @@ REQUIRED_PASSED_ARTIFACTS = {
     "dependency_review_audit": "dependency review audit",
     "release_image_dependency_audit": "release image dependency audit",
 }
+POLICY_CONTRACT_ARTIFACTS = {
+    "release_evidence_artifact:deployment_compose_audit": "deployment compose audit",
+    "release_evidence_artifact:repository_hygiene_audit": "repository hygiene audit",
+    "release_evidence_artifact:production_env_audit": "production env audit",
+    "release_evidence_artifact:external_acceptance_audit": "external acceptance audit",
+    "dependency_review_audit": "dependency review audit",
+    "release_image_dependency_audit": "release image dependency audit",
+}
 
 
 def build_go_live_readiness_audit(
@@ -46,6 +54,8 @@ def build_go_live_readiness_audit(
         checks.append(validate_handoff_manifest(manifest_payload))
         artifact_checks = validate_required_artifacts(manifest_payload)
         checks.extend(artifact_checks)
+        artifact_policy_checks = validate_artifact_policy_contracts(manifest_payload)
+        checks.extend(artifact_policy_checks)
         dependency_checks = validate_dependency_readiness(manifest_payload)
         checks.extend(dependency_checks)
 
@@ -63,7 +73,7 @@ def build_go_live_readiness_audit(
         if check.get("status") == "failed":
             blockers.extend(str(error) for error in check.get("errors", []))
 
-    return {
+    report = {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
         "status": "passed" if not blockers else "failed",
@@ -79,7 +89,9 @@ def build_go_live_readiness_audit(
         "blockers": blockers,
         "warnings": warnings,
         "checks": checks,
+        "policy_contract": {},
     }
+    return attach_policy_contract(report)
 
 
 def validate_handoff_manifest(payload: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +186,163 @@ def validate_dependency_readiness(payload: dict[str, Any]) -> list[dict[str, Any
     return checks
 
 
+def validate_artifact_policy_contracts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = artifact_by_name(payload)
+    checks: list[dict[str, Any]] = []
+    for artifact_name, display_name in POLICY_CONTRACT_ARTIFACTS.items():
+        artifact = artifacts.get(artifact_name)
+        summary = artifact.get("summary") if isinstance(artifact, dict) and isinstance(artifact.get("summary"), dict) else {}
+        policy_status = summary.get("policy_contract_status")
+        policy_failed_count = summary.get("policy_contract_failed_count")
+        errors: list[str] = []
+        if artifact is None:
+            errors.append(f"{display_name} artifact is missing")
+        elif policy_status not in {"passed", "warning"}:
+            errors.append(f"{display_name} policy contract must be passed or warning, got {policy_status or '<missing>'}")
+        if policy_failed_count not in {0, None}:
+            errors.append(f"{display_name} policy contract has failed checks")
+        checks.append(check_result(f"{artifact_name}:policy_contract", errors, summary=dict(summary)))
+    return checks
+
+
+def attach_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    policy_contract = validate_go_live_readiness_policy_contract(report)
+    report["policy_contract"] = policy_contract
+    summary = report.get("summary")
+    if isinstance(summary, dict):
+        summary["policy_contract_status"] = policy_contract.get("status")
+        summary["policy_contract_failed_count"] = int(policy_contract.get("failed_count") or 0)
+        summary["policy_contract_warning_count"] = int(policy_contract.get("warning_count") or 0)
+    if int(policy_contract.get("failed_count") or 0):
+        report["status"] = "failed"
+    return report
+
+
+def validate_go_live_readiness_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    checks = report.get("checks") if isinstance(report.get("checks"), list) else []
+    check_by_name = {str(check.get("name")): check for check in checks if isinstance(check, dict) and check.get("name")}
+    blockers = [str(blocker) for blocker in report.get("blockers") or []]
+    warnings = [str(warning) for warning in report.get("warnings") or []]
+    required_artifact_names = list(REQUIRED_PASSED_ARTIFACTS)
+    artifact_policy_check_names = [f"{name}:policy_contract" for name in POLICY_CONTRACT_ARTIFACTS]
+    policy_checks = [
+        policy_check(
+            code="schema.version",
+            status="passed" if report.get("schema_version") == 1 else "failed",
+            message="go-live readiness audit schema_version is 1"
+            if report.get("schema_version") == 1
+            else "go-live readiness audit schema_version must be 1",
+            evidence={"schema_version": report.get("schema_version")},
+        ),
+        policy_check(
+            code="handoff.manifest",
+            status=aggregate_check_status(check_by_name, ["handoff_manifest"]),
+            message="release handoff manifest is present and passed"
+            if aggregate_check_status(check_by_name, ["handoff_manifest"]) == "passed"
+            else "release handoff manifest must be present and passed",
+            evidence=checks_status_evidence(check_by_name, ["handoff_manifest"]),
+        ),
+        policy_check(
+            code="handoff.verification",
+            status=aggregate_check_status(check_by_name, ["handoff_verification"]),
+            message="release handoff verification is present, passed, and matches the manifest"
+            if aggregate_check_status(check_by_name, ["handoff_verification"]) == "passed"
+            else "release handoff verification must be present, passed, and match the manifest",
+            evidence=checks_status_evidence(check_by_name, ["handoff_verification"]),
+        ),
+        policy_check(
+            code="handoff.required_artifacts",
+            status=aggregate_check_status(check_by_name, required_artifact_names),
+            message="all go-live required handoff artifacts are present and passed"
+            if aggregate_check_status(check_by_name, required_artifact_names) == "passed"
+            else "all go-live required handoff artifacts must be present and passed",
+            evidence=checks_status_evidence(check_by_name, required_artifact_names),
+        ),
+        policy_check(
+            code="handoff.artifact_policy_contracts",
+            status=aggregate_check_status(check_by_name, artifact_policy_check_names),
+            message="go-live artifact policy contracts have no failed checks"
+            if aggregate_check_status(check_by_name, artifact_policy_check_names) == "passed"
+            else "go-live artifact policy contracts must have no failed checks",
+            evidence=checks_status_evidence(check_by_name, artifact_policy_check_names),
+        ),
+        policy_check(
+            code="dependency.release_image_inventory",
+            status=aggregate_check_status(check_by_name, ["dependency_inventory_release_image"]),
+            message="dependency inventory is backed by release image evidence with no release-blocking missing installs"
+            if aggregate_check_status(check_by_name, ["dependency_inventory_release_image"]) == "passed"
+            else "dependency inventory must be backed by release image evidence with no release-blocking missing installs",
+            evidence=checks_status_evidence(check_by_name, ["dependency_inventory_release_image"]),
+        ),
+        policy_check(
+            code="dependency.review_signoff",
+            status=aggregate_check_status(check_by_name, ["dependency_review_signoff"]),
+            message="dependency review signoff covers review-required items"
+            if aggregate_check_status(check_by_name, ["dependency_review_signoff"]) == "passed"
+            else "dependency review signoff must cover review-required items",
+            evidence=checks_status_evidence(check_by_name, ["dependency_review_signoff"]),
+        ),
+        policy_check(
+            code="blockers.clear",
+            status="passed" if not blockers else "failed",
+            message="go-live readiness has no blockers"
+            if not blockers
+            else "go-live readiness blockers must be cleared",
+            evidence={"blocker_count": len(blockers), "blockers": blockers},
+        ),
+        policy_check(
+            code="warnings.clear",
+            status="warning" if warnings else "passed",
+            message="go-live readiness has no warnings"
+            if not warnings
+            else "go-live readiness warnings should be reviewed before handoff",
+            evidence={"warning_count": len(warnings), "warnings": warnings},
+        ),
+    ]
+    failed_count = sum(1 for check in policy_checks if check["status"] == "failed")
+    warning_count = sum(1 for check in policy_checks if check["status"] == "warning")
+    passed_count = sum(1 for check in policy_checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in policy_checks if check["status"] == "failed"],
+        "warning_checks": [check for check in policy_checks if check["status"] == "warning"],
+        "checks": policy_checks,
+    }
+
+
+def aggregate_check_status(check_by_name: dict[str, dict[str, Any]], names: list[str]) -> str:
+    statuses = [str(check_by_name.get(name, {}).get("status") or "failed") for name in names]
+    return "failed" if any(status == "failed" for status in statuses) else "passed"
+
+
+def checks_status_evidence(check_by_name: dict[str, dict[str, Any]], names: list[str]) -> dict[str, Any]:
+    return {
+        "checks": {name: str(check_by_name.get(name, {}).get("status") or "missing") for name in names},
+        "failed_checks": [
+            name for name in names if str(check_by_name.get(name, {}).get("status") or "failed") == "failed"
+        ],
+    }
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
+
+
 def artifact_by_name(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list):
@@ -237,7 +406,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{report['status']} "
         f"checks={summary['check_count']} "
         f"blockers={summary['blocker_count']} "
-        f"warnings={summary['warning_count']}",
+        f"warnings={summary['warning_count']} "
+        f"policy={summary.get('policy_contract_status')}",
         flush=True,
     )
     return 0 if report["status"] == "passed" else 1

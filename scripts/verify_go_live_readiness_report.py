@@ -25,7 +25,9 @@ def verify_go_live_readiness_report(
     blockers = read_string_list(report, "blockers", errors)
     report_warnings = read_string_list(report, "warnings", errors)
     checks = read_checks(report.get("checks"), errors)
-    validate_summary(report.get("summary"), blockers, report_warnings, checks, errors)
+    policy_contract = read_policy_contract(report.get("policy_contract"), errors)
+    validate_summary(report.get("summary"), blockers, report_warnings, checks, policy_contract, errors)
+    validate_policy_contract(policy_contract, blockers, errors)
 
     duplicate_blockers = sorted({item for item in blockers if blockers.count(item) > 1})
     if duplicate_blockers:
@@ -137,11 +139,57 @@ def read_checks(value: Any, errors: list[str]) -> list[dict[str, Any]]:
     return checks
 
 
+def read_policy_contract(value: Any, errors: list[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        errors.append("go-live readiness report policy_contract must be an object")
+        return {}
+    status = value.get("status")
+    if status not in {"passed", "warning", "failed"}:
+        errors.append(
+            "go-live readiness report policy_contract.status must be passed, warning, or failed, "
+            f"got {status or '<missing>'}"
+        )
+    for key in ("passed_count", "warning_count", "failed_count"):
+        if not isinstance(value.get(key), int):
+            errors.append(f"go-live readiness report policy_contract.{key} must be an integer")
+    checks = value.get("checks")
+    if not isinstance(checks, list):
+        errors.append("go-live readiness report policy_contract.checks must be a list")
+    return value
+
+
+def validate_policy_contract(policy_contract: dict[str, Any], blockers: list[str], errors: list[str]) -> None:
+    if not policy_contract:
+        return
+    failed_count = policy_contract.get("failed_count")
+    warning_count = policy_contract.get("warning_count")
+    status = policy_contract.get("status")
+    if isinstance(failed_count, int) and failed_count < 0:
+        errors.append("go-live readiness report policy_contract.failed_count must not be negative")
+    if isinstance(warning_count, int) and warning_count < 0:
+        errors.append("go-live readiness report policy_contract.warning_count must not be negative")
+    if blockers:
+        if status != "failed":
+            errors.append("go-live readiness report policy_contract must be failed when blockers exist")
+        if failed_count == 0:
+            errors.append("go-live readiness report policy_contract failed_count must be nonzero when blockers exist")
+        return
+    if failed_count not in {0, None}:
+        errors.append("go-live readiness report policy_contract has failed checks without blockers")
+    expected_status = "warning" if warning_count else "passed"
+    if status != expected_status:
+        errors.append(
+            "go-live readiness report policy_contract status mismatch: "
+            f"expected {expected_status}, got {status or '<missing>'}"
+        )
+
+
 def validate_summary(
     summary: Any,
     blockers: list[str],
     warnings: list[str],
     checks: list[dict[str, Any]],
+    policy_contract: dict[str, Any],
     errors: list[str],
 ) -> None:
     if not isinstance(summary, dict):
@@ -153,6 +201,8 @@ def validate_summary(
         "failed_check_count": sum(1 for check in checks if check.get("status") == "failed"),
         "blocker_count": len(blockers),
         "warning_count": len(warnings),
+        "policy_contract_failed_count": policy_contract.get("failed_count"),
+        "policy_contract_warning_count": policy_contract.get("warning_count"),
     }
     for key, expected in expected_counts.items():
         if summary.get(key) != expected:

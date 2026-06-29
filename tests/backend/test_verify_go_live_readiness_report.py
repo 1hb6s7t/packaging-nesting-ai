@@ -91,6 +91,22 @@ def test_verify_go_live_readiness_report_rejects_summary_mismatch(tmp_path: Path
     assert any("summary blocker_count mismatch" in error for error in verification["errors"])
 
 
+def test_verify_go_live_readiness_report_rejects_failed_policy_without_blockers(tmp_path: Path) -> None:
+    module = load_verify_go_live_readiness_report_module()
+    report_path = tmp_path / "go-live-readiness.json"
+    report = readiness_report([])
+    report["summary"]["policy_contract_status"] = "failed"
+    report["summary"]["policy_contract_failed_count"] = 1
+    report["policy_contract"]["status"] = "failed"
+    report["policy_contract"]["failed_count"] = 1
+    write_json(report_path, report)
+
+    verification = module.verify_go_live_readiness_report(report_path)
+
+    assert verification["status"] == "failed"
+    assert "go-live readiness report policy_contract has failed checks without blockers" in verification["errors"]
+
+
 def test_verify_go_live_readiness_report_cli_writes_report_and_returns_nonzero(tmp_path: Path) -> None:
     module = load_verify_go_live_readiness_report_module()
     report_path = tmp_path / "go-live-readiness.json"
@@ -117,6 +133,8 @@ def test_verify_go_live_readiness_report_cli_writes_report_and_returns_nonzero(t
 
 
 def readiness_report(blockers: list[str]) -> dict:
+    policy_status = "failed" if blockers else "passed"
+    policy_failed_count = 1 if blockers else 0
     checks = [
         {
             "name": "handoff_manifest",
@@ -146,10 +164,30 @@ def readiness_report(blockers: list[str]) -> dict:
             "failed_check_count": 1 if blockers else 0,
             "blocker_count": len(blockers),
             "warning_count": 0,
+            "policy_contract_status": policy_status,
+            "policy_contract_failed_count": policy_failed_count,
+            "policy_contract_warning_count": 0,
         },
         "blockers": blockers,
         "warnings": [],
         "checks": checks,
+        "policy_contract": {
+            "status": policy_status,
+            "passed_count": 1 if not blockers else 0,
+            "warning_count": 0,
+            "failed_count": policy_failed_count,
+            "checks": [
+                {
+                    "code": "blockers.clear",
+                    "status": "failed" if blockers else "passed",
+                    "severity": "critical" if blockers else "info",
+                    "message": "go-live readiness blockers must be cleared"
+                    if blockers
+                    else "go-live readiness has no blockers",
+                    "evidence": {"blocker_count": len(blockers), "blockers": blockers},
+                }
+            ],
+        },
     }
 
 
