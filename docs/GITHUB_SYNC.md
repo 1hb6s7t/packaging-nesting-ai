@@ -48,5 +48,15 @@ CI artifacts:
   GitHub run context plus SHA-256 hashes for the uploaded release evidence files,
   so the downloaded artifact can be reviewed offline.
 
+After downloading and extracting `release-preflight-evidence-<commit>`, verify
+the artifact contents from the repository root with:
+
+```powershell
+python scripts\verify_ci_evidence_manifest.py --manifest <extract-dir>\ci-evidence-manifest.json --base-dir <extract-dir> --output <extract-dir>\ci-evidence-manifest-verification.json
+```
+
+CI runs the same verifier and uploads `ci-evidence-manifest-verification.json`
+beside the manifest.
+
 Use the latest successful CI run as the GitHub-side proof that the pushed commit
 still passes the project gates.

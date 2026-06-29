@@ -124,6 +124,12 @@ jobs:
             --frontend-build-job "Frontend build" \
             --frontend-artifact-name "frontend-dist-${{ github.sha }}"
 
+      - name: Verify CI evidence manifest
+        run: |
+          python scripts/verify_ci_evidence_manifest.py \
+            --manifest tmp/ci-evidence-manifest.json \
+            --output tmp/ci-evidence-manifest-verification.json
+
       - name: Upload release preflight evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -131,6 +137,7 @@ jobs:
           name: release-preflight-evidence-${{ github.sha }}
           path: |
             tmp/ci-evidence-manifest.json
+            tmp/ci-evidence-manifest-verification.json
             tmp/ci-release-preflight.json
             tmp/ci-release-preflight-verification.json
             tmp/ci-dependency-inventory.json

@@ -9,10 +9,21 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci_evidence_manifest.py"
+VERIFY_SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_ci_evidence_manifest.py"
 
 
 def load_ci_evidence_manifest_module():
     spec = importlib.util.spec_from_file_location("ci_evidence_manifest", SCRIPT_PATH)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_verify_ci_evidence_manifest_module():
+    spec = importlib.util.spec_from_file_location("verify_ci_evidence_manifest", VERIFY_SCRIPT_PATH)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -132,6 +143,135 @@ def test_ci_evidence_manifest_cli_writes_report_and_returns_nonzero(tmp_path: Pa
     manifest = json.loads(output_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert "release_preflight_verification" in manifest["summary"]["failed_artifacts"]
+
+
+def test_verify_ci_evidence_manifest_accepts_generated_manifest(tmp_path: Path) -> None:
+    manifest_module = load_ci_evidence_manifest_module()
+    verify_module = load_verify_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    output_path = tmp_path / "ci-evidence-manifest.json"
+    manifest = manifest_module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=output_path,
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+    write_json(output_path, manifest)
+
+    verification = verify_module.verify_ci_evidence_manifest(output_path)
+
+    assert verification["status"] == "passed"
+    assert verification["summary"]["artifact_count"] == manifest["summary"]["artifact_count"]
+    assert verification["summary"]["failed_count"] == 0
+    assert verification["summary"]["manifest_error_count"] == 0
+
+
+def test_verify_ci_evidence_manifest_detects_tampered_artifact(tmp_path: Path) -> None:
+    manifest_module = load_ci_evidence_manifest_module()
+    verify_module = load_verify_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    output_path = tmp_path / "ci-evidence-manifest.json"
+    manifest = manifest_module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=output_path,
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+    write_json(output_path, manifest)
+    paths["preflight_report"].write_text(paths["preflight_report"].read_text(encoding="utf-8") + "\n{}", encoding="utf-8")
+
+    verification = verify_module.verify_ci_evidence_manifest(output_path)
+
+    assert verification["status"] == "failed"
+    assert verification["summary"]["failed_artifacts"] == ["release_preflight_report"]
+    failed_check = next(item for item in verification["checks"] if item["name"] == "release_preflight_report")
+    assert "artifact size mismatch" in "\n".join(failed_check["errors"])
+    assert "artifact sha256 mismatch" in failed_check["errors"]
+
+
+def test_verify_ci_evidence_manifest_rejects_unsafe_relative_path(tmp_path: Path) -> None:
+    manifest_module = load_ci_evidence_manifest_module()
+    verify_module = load_verify_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    output_path = tmp_path / "ci-evidence-manifest.json"
+    manifest = manifest_module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=output_path,
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+    manifest["artifacts"][0]["relative_path"] = "../ci-release-preflight.json"
+    write_json(output_path, manifest)
+
+    verification = verify_module.verify_ci_evidence_manifest(output_path)
+
+    assert verification["status"] == "failed"
+    assert "release_preflight_report" in verification["summary"]["failed_artifacts"]
+    failed_check = next(item for item in verification["checks"] if item["name"] == "release_preflight_report")
+    assert "artifact relative_path is unsafe" in failed_check["errors"][0]
+
+
+def test_verify_ci_evidence_manifest_rejects_skipped_frontend_without_covering_job(tmp_path: Path) -> None:
+    manifest_module = load_ci_evidence_manifest_module()
+    verify_module = load_verify_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    output_path = tmp_path / "ci-evidence-manifest.json"
+    manifest = manifest_module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=output_path,
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+    manifest["frontend_gate_policy"]["covered_by_ci_job"] = None
+    write_json(output_path, manifest)
+
+    verification = verify_module.verify_ci_evidence_manifest(output_path)
+
+    assert verification["status"] == "failed"
+    assert "frontend gate was skipped without a covering CI job" in verification["manifest_errors"]
+
+
+def test_verify_ci_evidence_manifest_cli_writes_report_and_returns_nonzero(tmp_path: Path) -> None:
+    manifest_module = load_ci_evidence_manifest_module()
+    verify_module = load_verify_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    output_path = tmp_path / "ci-evidence-manifest.json"
+    verification_output = tmp_path / "ci-evidence-manifest-verification.json"
+    manifest = manifest_module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=output_path,
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+    manifest["status"] = "failed"
+    write_json(output_path, manifest)
+
+    exit_code = verify_module.main(["--manifest", str(output_path), "--output", str(verification_output)])
+
+    assert exit_code == 1
+    verification = json.loads(verification_output.read_text(encoding="utf-8"))
+    assert verification["status"] == "failed"
+    assert "manifest status must be passed, got failed" in verification["manifest_errors"]
 
 
 def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
