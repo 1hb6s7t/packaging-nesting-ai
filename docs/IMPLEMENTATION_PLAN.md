@@ -15,7 +15,7 @@
 当前进度：
 
 - 第 1-2 步：工程骨架、数据库模型、Alembic 迁移已完成。
-- 第 3 步：文件上传、预检、SVG 基础解析、DXF 基础解析、转换作业持久化、外部转换服务提交、供应商回调 token hash 鉴权与轮换、历史明文 token 返回遮蔽与兼容校验、供应商异常码映射、SLA 逾期巡检、normalized SVG/DXF 结果回写、ArtworkVersion 归档、转换日志页和 `scripts/conversion_supplier_audit.py` 离线供应商验收报告已完成；CDR/AI/PDF 不内置解析器，仍通过独立转换服务或人工导出处理。
+- 第 3 步：文件上传、预检、SVG 基础解析、DXF 基础解析、转换作业持久化、外部转换服务提交、供应商回调 token hash 鉴权与轮换、历史明文 token 返回遮蔽与兼容校验、供应商异常码映射、SLA 逾期巡检、normalized SVG/DXF 结果回写、ArtworkVersion 归档、转换日志页和 `scripts/conversion_supplier_audit.py` 离线供应商验收报告已完成；该报告已通过 `policy_contract` 校验 endpoint/callback HTTPS、提交认证、multipart、202 accepted、token 轮换/hash-only、normalized 产物、Polygon、异常码映射覆盖、SLA 和沙箱通知禁用；CDR/AI/PDF 不内置解析器，仍通过独立转换服务或人工导出处理。
 - 第 4 步：Polygon 标准化、Geometry Engine、多边形相交/包含/最小距离校验、Shapely 精确差集空白面积、真实 offset 和自交修复已完成；Clipper2/更高级轮廓处理可作为后续性能和精度优化。
 - 第 5-7 步：纸张规格、CSV/XLSX 订单导入、规则引擎、规则集版本化、执行日志、Rectpack MVP Adapter、基于真实放置多边形的 Validator、SVG 预览、JSON 报告已完成基础闭环。
 - 企业持久化：订单、纸张、版图元数据、预检报告、FileConversionJob、Polygon Asset、NestingJob、NestingSolution、SolutionPlacement、ValidationReport 已接入 SQLAlchemy repository。

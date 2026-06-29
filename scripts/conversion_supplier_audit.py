@@ -26,6 +26,7 @@ from app.domain import schemas
 from app.services import repository, storage
 from app.services.artworks import checksum_bytes, preflight_artwork
 from app.services.file_conversion import (
+    VENDOR_ERROR_STATUS_MAP,
     apply_authenticated_conversion_callback,
     apply_conversion_result,
     check_file_conversion_sla,
@@ -39,6 +40,7 @@ def build_conversion_supplier_audit_report(*, simulate_submit_failure: bool = Fa
         "generated_at": datetime.now(UTC).isoformat(),
         "status": "failed",
         "summary": {},
+        "policy_contract": {},
         "checks": [],
         "submit": {},
         "token_rotation": {},
@@ -79,6 +81,7 @@ def build_conversion_supplier_audit_report(*, simulate_submit_failure: bool = Fa
 
     report.update(workflow)
     report["checks"] = validate_workflow(report)
+    report["policy_contract"] = validate_conversion_supplier_policy_contract(report)
     report["summary"] = build_summary(report)
     report["status"] = "passed" if report["summary"]["failed_count"] == 0 else "failed"
     return report
@@ -215,6 +218,8 @@ def run_supplier_workflow(
             "remote_status_code": second.remote_status_code,
             "remote_response": second.remote_response,
             "request_count": len(requests),
+            "endpoint_url_https": all(str(item.get("url") or "").startswith("https://") for item in requests),
+            "callback_url_https": all(str(item.get("callback_url") or "").startswith("https://") for item in requests),
             "authorization_header_present": all(bool(item.get("authorization")) for item in requests),
             "multipart_contains_job_id": all(item.get("contains_job_id") for item in requests),
             "multipart_contains_source_bytes": all(item.get("contains_source_bytes") for item in requests),
@@ -233,6 +238,12 @@ def run_supplier_workflow(
             "job_status": callback_result.job.status,
             "polygon_count": callback_result.polygon_count,
             "has_artwork_version": callback_result.artwork_version is not None,
+            "artwork_version_target_format": callback_result.artwork_version.metadata.get("target_format")
+            if callback_result.artwork_version
+            else None,
+            "normalized_storage_key": callback_result.artwork_version.normalized_storage_key
+            if callback_result.artwork_version
+            else None,
             "polygon_storage_key": callback_result.polygon_storage_key,
             "last_callback_status": callback_result.job.metadata.get("last_callback_status"),
         },
@@ -260,6 +271,7 @@ def make_supplier_transport(requests: list[dict[str, Any]], *, simulate_submit_f
                 "authorization": request.headers.get("authorization"),
                 "contains_job_id": b'name="job_id"' in body,
                 "contains_source_bytes": b"conversion supplier audit source" in body,
+                "callback_url": multipart_field(body, "callback_url"),
                 "callback_token": multipart_field(body, "callback_token"),
             }
         )
@@ -280,6 +292,8 @@ def validate_workflow(report: dict[str, Any]) -> list[dict[str, Any]]:
         check_result("supplier submit accepted", submit.get("status") == "submitted", f"status={submit.get('status')}"),
         check_result("supplier returned 202", submit.get("remote_status_code") == 202, f"remote_status={submit.get('remote_status_code')}"),
         check_result("two submit attempts recorded", submit.get("request_count") == 2, f"requests={submit.get('request_count')}"),
+        check_result("supplier endpoint uses https", bool(submit.get("endpoint_url_https")), "supplier endpoint scheme checked"),
+        check_result("callback url uses https", bool(submit.get("callback_url_https")), "callback url scheme checked"),
         check_result("submit authorization header present", bool(submit.get("authorization_header_present")), "authorization checked"),
         check_result("submit multipart has job id", bool(submit.get("multipart_contains_job_id")), "job_id field checked"),
         check_result("submit multipart has source file bytes", bool(submit.get("multipart_contains_source_bytes")), "source file checked"),
@@ -301,6 +315,207 @@ def validate_workflow(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def validate_conversion_supplier_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
+    submit = report.get("submit") or {}
+    token = report.get("token_rotation") or {}
+    callback = report.get("callback") or {}
+    vendor_error = report.get("vendor_error") or {}
+    sla = report.get("sla") or {}
+    checks: list[dict[str, Any]] = [
+        policy_check(
+            code="submit.endpoint.https",
+            status="passed" if bool(submit.get("endpoint_url_https")) else "failed",
+            message="supplier submit endpoint uses HTTPS" if bool(submit.get("endpoint_url_https")) else "supplier submit endpoint must use HTTPS",
+            evidence={"endpoint_url_https": bool(submit.get("endpoint_url_https"))},
+        ),
+        policy_check(
+            code="submit.callback_url.https",
+            status="passed" if bool(submit.get("callback_url_https")) else "failed",
+            message="supplier callback URL uses HTTPS" if bool(submit.get("callback_url_https")) else "supplier callback URL must use HTTPS",
+            evidence={"callback_url_https": bool(submit.get("callback_url_https"))},
+        ),
+        policy_check(
+            code="submit.authentication",
+            status="passed" if bool(submit.get("authorization_header_present")) else "failed",
+            message="supplier submit request includes Authorization header"
+            if bool(submit.get("authorization_header_present"))
+            else "supplier submit request must include Authorization header",
+            evidence={"authorization_header_present": bool(submit.get("authorization_header_present"))},
+        ),
+        policy_check(
+            code="submit.multipart.source",
+            status="passed"
+            if bool(submit.get("multipart_contains_job_id")) and bool(submit.get("multipart_contains_source_bytes"))
+            else "failed",
+            message="supplier submit multipart contains job id and source file"
+            if bool(submit.get("multipart_contains_job_id")) and bool(submit.get("multipart_contains_source_bytes"))
+            else "supplier submit multipart must contain job id and source file",
+            evidence={
+                "multipart_contains_job_id": bool(submit.get("multipart_contains_job_id")),
+                "multipart_contains_source_bytes": bool(submit.get("multipart_contains_source_bytes")),
+            },
+        ),
+        policy_check(
+            code="submit.retryable_status",
+            status="passed" if submit.get("status") == "submitted" and submit.get("remote_status_code") == 202 else "failed",
+            message="supplier accepted the conversion job with 202"
+            if submit.get("status") == "submitted" and submit.get("remote_status_code") == 202
+            else "supplier submit must return accepted 202 during sandbox audit",
+            evidence={"status": submit.get("status"), "remote_status_code": submit.get("remote_status_code")},
+        ),
+        policy_check(
+            code="token.rotation",
+            status="passed" if bool(token.get("rotated")) and token.get("history_tail") == token.get("old_token_tail") else "failed",
+            message="callback token rotation preserves old token tail history"
+            if bool(token.get("rotated")) and token.get("history_tail") == token.get("old_token_tail")
+            else "callback token rotation must preserve old token tail history",
+            evidence={
+                "rotated": bool(token.get("rotated")),
+                "old_token_tail": token.get("old_token_tail"),
+                "new_token_tail": token.get("new_token_tail"),
+                "history_tail": token.get("history_tail"),
+            },
+        ),
+        policy_check(
+            code="token.storage",
+            status="passed" if bool(token.get("hash_stored")) and not bool(token.get("plaintext_stored")) else "failed",
+            message="callback token hash is stored and plaintext is absent"
+            if bool(token.get("hash_stored")) and not bool(token.get("plaintext_stored"))
+            else "callback token must be stored as hash only",
+            evidence={"hash_stored": bool(token.get("hash_stored")), "plaintext_stored": bool(token.get("plaintext_stored"))},
+        ),
+        policy_check(
+            code="callback.old_token.rejected",
+            status="passed" if bool(callback.get("old_token_rejected")) else "failed",
+            message="old callback token is rejected" if bool(callback.get("old_token_rejected")) else "old callback token must be rejected after rotation",
+            evidence={"old_token_rejected": bool(callback.get("old_token_rejected"))},
+        ),
+        policy_check(
+            code="callback.normalized_artifact",
+            status="passed"
+            if callback.get("job_status") == "completed"
+            and bool(callback.get("has_artwork_version"))
+            and callback.get("artwork_version_target_format") in {"svg", "dxf"}
+            and present(callback.get("normalized_storage_key"))
+            else "failed",
+            message="callback creates normalized vector artifact and artwork version"
+            if callback.get("job_status") == "completed"
+            and bool(callback.get("has_artwork_version"))
+            and callback.get("artwork_version_target_format") in {"svg", "dxf"}
+            and present(callback.get("normalized_storage_key"))
+            else "callback must create a normalized SVG/DXF artwork version",
+            evidence={
+                "job_status": callback.get("job_status"),
+                "has_artwork_version": bool(callback.get("has_artwork_version")),
+                "artwork_version_target_format": callback.get("artwork_version_target_format"),
+                "normalized_storage_key_present": present(callback.get("normalized_storage_key")),
+            },
+        ),
+        policy_check(
+            code="callback.polygon_parse",
+            status="passed" if int(callback.get("polygon_count") or 0) > 0 and present(callback.get("polygon_storage_key")) else "failed",
+            message="callback parses and stores polygon geometry"
+            if int(callback.get("polygon_count") or 0) > 0 and present(callback.get("polygon_storage_key"))
+            else "callback must parse and store polygon geometry",
+            evidence={
+                "polygon_count": callback.get("polygon_count"),
+                "polygon_storage_key_present": present(callback.get("polygon_storage_key")),
+            },
+        ),
+        policy_check(
+            code="vendor_error.mapping",
+            status="passed"
+            if vendor_error.get("code") == "unsupported_format"
+            and vendor_error.get("mapped_status") == "manual_required"
+            and vendor_error.get("job_status") == "manual_required"
+            else "failed",
+            message="known vendor error maps to manual handling"
+            if vendor_error.get("code") == "unsupported_format"
+            and vendor_error.get("mapped_status") == "manual_required"
+            and vendor_error.get("job_status") == "manual_required"
+            else "known vendor errors must normalize and map to the expected status",
+            evidence={
+                "code": vendor_error.get("code"),
+                "mapped_status": vendor_error.get("mapped_status"),
+                "job_status": vendor_error.get("job_status"),
+            },
+        ),
+        policy_check(
+            code="vendor_error.map_coverage",
+            status="passed" if vendor_error_map_policy_ok() else "failed",
+            message="vendor error map covers manual and failed supplier outcomes"
+            if vendor_error_map_policy_ok()
+            else "vendor error map must cover manual and failed supplier outcomes",
+            evidence={
+                "manual_codes": sorted(code for code, status in VENDOR_ERROR_STATUS_MAP.items() if status == "manual_required"),
+                "failed_codes": sorted(code for code, status in VENDOR_ERROR_STATUS_MAP.items() if status == "failed"),
+            },
+        ),
+        policy_check(
+            code="sla.overdue_detection",
+            status="passed"
+            if sla.get("status") == "overdue" and int(sla.get("overdue_count") or 0) >= 1 and bool(sla.get("contains_sla_job"))
+            else "failed",
+            message="SLA audit detects overdue conversion job"
+            if sla.get("status") == "overdue" and int(sla.get("overdue_count") or 0) >= 1 and bool(sla.get("contains_sla_job"))
+            else "SLA audit must detect overdue conversion jobs",
+            evidence={
+                "status": sla.get("status"),
+                "overdue_count": sla.get("overdue_count"),
+                "contains_sla_job": bool(sla.get("contains_sla_job")),
+            },
+        ),
+        policy_check(
+            code="sla.notification_control",
+            status="passed" if int(sla.get("notification_count") or 0) == 0 else "failed",
+            message="SLA sandbox keeps notifications disabled"
+            if int(sla.get("notification_count") or 0) == 0
+            else "SLA sandbox must not dispatch real notifications",
+            evidence={"notification_count": sla.get("notification_count")},
+        ),
+    ]
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
+
+
+def present(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
+def vendor_error_map_policy_ok() -> bool:
+    manual_codes = {code for code, status in VENDOR_ERROR_STATUS_MAP.items() if status == "manual_required"}
+    failed_codes = {code for code, status in VENDOR_ERROR_STATUS_MAP.items() if status == "failed"}
+    required_manual = {"unsupported_format", "missing_dieline", "password_protected", "font_missing", "license_required"}
+    required_failed = {"converter_crash", "quota_exceeded", "remote_service_unavailable", "timeout"}
+    return required_manual.issubset(manual_codes) and required_failed.issubset(failed_codes)
+
+
 def check_result(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "status": "passed" if passed else "failed", "detail": detail}
 
@@ -318,9 +533,17 @@ def multipart_field(body: bytes, name: str) -> str:
 
 def build_summary(report: dict[str, Any]) -> dict[str, Any]:
     checks = report.get("checks") or []
+    policy_contract = report.get("policy_contract") or {}
+    policy_failed_count = int(policy_contract.get("failed_count") or 0)
+    policy_warning_count = int(policy_contract.get("warning_count") or 0)
     return {
         "check_count": len(checks),
-        "failed_count": sum(1 for item in checks if item.get("status") != "passed") + len(report.get("errors") or []),
+        "failed_count": sum(1 for item in checks if item.get("status") != "passed")
+        + policy_failed_count
+        + len(report.get("errors") or []),
+        "policy_contract_status": policy_contract.get("status"),
+        "policy_contract_failed_count": policy_failed_count,
+        "policy_contract_warning_count": policy_warning_count,
         "submit_status": (report.get("submit") or {}).get("status"),
         "callback_status": (report.get("callback") or {}).get("job_status"),
         "vendor_error_status": (report.get("vendor_error") or {}).get("job_status"),

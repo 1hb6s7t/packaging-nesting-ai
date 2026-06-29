@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
@@ -27,9 +28,15 @@ def test_conversion_supplier_audit_passes_submit_callback_error_and_sla_checks()
 
     assert report["status"] == "passed"
     assert report["summary"]["failed_count"] == 0
+    assert report["policy_contract"]["status"] == "passed"
+    assert report["policy_contract"]["failed_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
     assert report["submit"]["status"] == "submitted"
     assert report["submit"]["remote_status_code"] == 202
     assert report["submit"]["request_count"] == 2
+    assert report["submit"]["endpoint_url_https"] is True
+    assert report["submit"]["callback_url_https"] is True
     assert report["submit"]["authorization_header_present"] is True
     assert report["submit"]["multipart_contains_job_id"] is True
     assert report["submit"]["multipart_contains_source_bytes"] is True
@@ -42,6 +49,8 @@ def test_conversion_supplier_audit_passes_submit_callback_error_and_sla_checks()
     assert report["callback"]["job_status"] == "completed"
     assert report["callback"]["polygon_count"] == 1
     assert report["callback"]["has_artwork_version"] is True
+    assert report["callback"]["artwork_version_target_format"] == "svg"
+    assert report["callback"]["normalized_storage_key"]
     assert report["vendor_error"]["job_status"] == "manual_required"
     assert report["vendor_error"]["code"] == "unsupported_format"
     assert report["vendor_error"]["mapped_status"] == "manual_required"
@@ -54,6 +63,60 @@ def test_conversion_supplier_audit_passes_submit_callback_error_and_sla_checks()
     assert "audit-converter-secret" not in serialized
 
 
+def test_conversion_supplier_policy_contract_fails_when_submit_is_not_authenticated() -> None:
+    module = load_conversion_supplier_audit_module()
+    report = module.build_conversion_supplier_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["submit"]["authorization_header_present"] = False
+
+    policy = module.validate_conversion_supplier_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "submit.authentication")
+    assert failed_check["evidence"]["authorization_header_present"] is False
+
+
+def test_conversion_supplier_policy_contract_fails_when_plaintext_token_is_stored() -> None:
+    module = load_conversion_supplier_audit_module()
+    report = module.build_conversion_supplier_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["token_rotation"]["plaintext_stored"] = True
+
+    policy = module.validate_conversion_supplier_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "token.storage")
+    assert failed_check["evidence"]["plaintext_stored"] is True
+
+
+def test_conversion_supplier_policy_contract_fails_when_normalized_artifact_is_missing() -> None:
+    module = load_conversion_supplier_audit_module()
+    report = module.build_conversion_supplier_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["callback"]["has_artwork_version"] = False
+    broken_report["callback"]["normalized_storage_key"] = None
+
+    policy = module.validate_conversion_supplier_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "callback.normalized_artifact")
+    assert failed_check["evidence"]["has_artwork_version"] is False
+    assert failed_check["evidence"]["normalized_storage_key_present"] is False
+
+
+def test_conversion_supplier_policy_contract_fails_when_sla_job_is_missing() -> None:
+    module = load_conversion_supplier_audit_module()
+    report = module.build_conversion_supplier_audit_report()
+    broken_report = copy.deepcopy(report)
+    broken_report["sla"]["contains_sla_job"] = False
+
+    policy = module.validate_conversion_supplier_policy_contract(broken_report)
+
+    assert policy["status"] == "failed"
+    failed_check = next(check for check in policy["failed_checks"] if check["code"] == "sla.overdue_detection")
+    assert failed_check["evidence"]["contains_sla_job"] is False
+
+
 def test_conversion_supplier_audit_fails_when_submit_fails() -> None:
     module = load_conversion_supplier_audit_module()
 
@@ -61,6 +124,8 @@ def test_conversion_supplier_audit_fails_when_submit_fails() -> None:
 
     assert report["status"] == "failed"
     assert report["summary"]["failed_count"] >= 1
+    assert report["policy_contract"]["status"] == "failed"
+    assert report["summary"]["policy_contract_failed_count"] >= 1
     assert report["submit"]["status"] == "failed"
     assert report["submit"]["remote_status_code"] is None
     assert "503" in report["submit"]["message"]
