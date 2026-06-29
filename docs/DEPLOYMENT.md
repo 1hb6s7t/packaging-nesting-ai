@@ -47,7 +47,7 @@ python scripts\solver_governance_audit.py --output artifacts\solver-governance-a
 ```
 
 `--write-draft` 会从 `.env.production.example` 生成 `.env.production`，自动填入新的 `AUTH_SECRET_KEY` 和 `DEFAULT_ADMIN_PASSWORD`，并在 draft 报告中只记录 key 名称，不输出密钥明文。正式审计前必须替换数据库、Redis、MinIO、管理员邮箱和前端域名等剩余 `<REPLACE_WITH_...>` 外部占位值；`production_env_audit.py` 会阻断仍保留占位值或 example/template 域名的文件。该脚本只读取指定 env 文件和应用默认值，不依赖当前终端环境变量；语法错误、重复 key、非生产 `APP_ENV` 或不满足生产安全规则时返回非零退出码。
-`scripts/storage_export_audit.py` 会在临时数据库中通过 Storage Adapter 写入临时本地导出对象，验证 adapter object_key 规范化/危险 key 拒绝、read/write/inspect 元数据、导出 manifest、对象 version_id/ETag/size、恢复演练 checksum、篡改检测、version drift 检测和过期归档 dry-run，可作为真实 MinIO/NAS 验收前的本地证据。
+`scripts/storage_export_audit.py` 会在临时数据库中通过 Storage Adapter 写入临时本地导出对象，验证 adapter object_key 规范化/危险 key 拒绝、read/write/inspect 元数据、导出 manifest、对象 version_id/ETag/size、恢复演练 checksum、篡改检测、version drift 检测和过期归档 dry-run；报告还会输出 `policy_contract`，校验 manifest/recovery solution scope、对象元数据完整性、对象 key 作用域、当前对象 version/ETag/size 匹配、恢复演练覆盖率、单 active 版本链、保留期限和 archive dry-run 过期覆盖，可作为真实 MinIO/NAS 验收前的本地证据。
 `scripts/conversion_supplier_audit.py` 会在临时数据库和临时对象目录中用 mocked 供应商 endpoint 验证外部转换提交认证、multipart 原文件、callback token hash 落库/明文不落库、token 轮换、旧 token 拒绝、normalized SVG/Polygon 回写、供应商异常码映射和 SLA 逾期巡检，可作为真实供应商沙箱验收前的本地证据。
 `scripts/solver_governance_audit.py` 会在临时数据库中验证 Solver 注册表种子、外部 stub 启用阻断、禁用许可证阻断、运行时 stub 防线、Rectpack 确定性输出和 Benchmark 持久化，可作为商业 Solver 接入前的治理证据。
 
