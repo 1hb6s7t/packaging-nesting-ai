@@ -50,6 +50,7 @@ TARGETED_BACKEND_TESTS = [
     "tests/backend/test_release_handoff_bundle.py",
     "tests/backend/test_verify_release_handoff_bundle.py",
     "tests/backend/test_go_live_readiness_audit.py",
+    "tests/backend/test_verify_go_live_readiness_report.py",
     "tests/backend/test_go_live_remediation_packet.py",
     "tests/backend/test_release_evidence_pack.py",
     "tests/backend/test_verify_release_evidence_pack.py",

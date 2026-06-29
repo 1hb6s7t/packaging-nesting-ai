@@ -33,8 +33,12 @@ def build_ci_evidence_manifest(
     preflight_verification: Path,
     dependency_inventory: Path | None,
     evidence_dir: Path,
+    dependency_review_audit: Path | None = None,
+    release_image_dependency_audit: Path | None = None,
     handoff_manifest: Path | None = None,
     handoff_verification: Path | None = None,
+    go_live_readiness: Path | None = None,
+    go_live_readiness_verification: Path | None = None,
     output_path: Path | None = None,
     allow_skipped_frontend: bool = False,
     frontend_build_job: str | None = None,
@@ -44,9 +48,17 @@ def build_ci_evidence_manifest(
     resolved_preflight_report = resolve_repo_path(preflight_report)
     resolved_preflight_verification = resolve_repo_path(preflight_verification)
     resolved_dependency_inventory = resolve_repo_path(dependency_inventory) if dependency_inventory else None
+    resolved_dependency_review_audit = resolve_repo_path(dependency_review_audit) if dependency_review_audit else None
+    resolved_release_image_dependency_audit = (
+        resolve_repo_path(release_image_dependency_audit) if release_image_dependency_audit else None
+    )
     resolved_evidence_dir = resolve_repo_path(evidence_dir)
     resolved_handoff_manifest = resolve_repo_path(handoff_manifest) if handoff_manifest else None
     resolved_handoff_verification = resolve_repo_path(handoff_verification) if handoff_verification else None
+    resolved_go_live_readiness = resolve_repo_path(go_live_readiness) if go_live_readiness else None
+    resolved_go_live_readiness_verification = (
+        resolve_repo_path(go_live_readiness_verification) if go_live_readiness_verification else None
+    )
     resolved_output = resolve_repo_path(output_path) if output_path else None
     base_dir = (resolved_output.parent if resolved_output else REPO_ROOT).resolve()
 
@@ -93,6 +105,28 @@ def build_ci_evidence_manifest(
             )
         )
 
+    if resolved_dependency_review_audit is not None:
+        artifacts.append(
+            build_json_artifact(
+                "dependency_review_audit",
+                resolved_dependency_review_audit,
+                base_dir,
+                required=True,
+                validation=validate_status_json_report(resolved_dependency_review_audit, "dependency review audit"),
+            )
+        )
+
+    if resolved_release_image_dependency_audit is not None:
+        artifacts.append(
+            build_json_artifact(
+                "release_image_dependency_audit",
+                resolved_release_image_dependency_audit,
+                base_dir,
+                required=True,
+                validation=validate_release_image_dependency_audit(resolved_release_image_dependency_audit),
+            )
+        )
+
     evidence_manifest = resolved_evidence_dir / EVIDENCE_MANIFEST_NAME
     evidence_verification = resolved_evidence_dir / EVIDENCE_VERIFICATION_NAME
     evidence_pack_validation = validate_evidence_manifest(evidence_manifest)
@@ -136,6 +170,30 @@ def build_ci_evidence_manifest(
                 validation=validate_handoff_verification(
                     resolved_handoff_verification,
                     expected_manifest=resolved_handoff_manifest,
+                ),
+            )
+        )
+
+    if resolved_go_live_readiness is not None:
+        artifacts.append(
+            build_json_artifact(
+                "go_live_readiness_report",
+                resolved_go_live_readiness,
+                base_dir,
+                required=True,
+                validation=validate_go_live_readiness_report(resolved_go_live_readiness),
+            )
+        )
+    if resolved_go_live_readiness_verification is not None:
+        artifacts.append(
+            build_json_artifact(
+                "go_live_readiness_verification",
+                resolved_go_live_readiness_verification,
+                base_dir,
+                required=True,
+                validation=validate_go_live_readiness_verification(
+                    resolved_go_live_readiness_verification,
+                    expected_report=resolved_go_live_readiness,
                 ),
             )
         )
@@ -247,6 +305,34 @@ def validate_dependency_inventory(path: Path) -> dict[str, Any]:
     return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
 
 
+def validate_status_json_report(path: Path, label: str) -> dict[str, Any]:
+    payload = safe_read_json(path)
+    if payload is None:
+        return {"status": "failed", "summary": {}, "errors": [f"{label} file is not valid JSON: {path}"]}
+    errors: list[str] = []
+    if payload.get("schema_version") != 1:
+        errors.append(f"{label} schema_version must be 1")
+    if payload.get("status") != "passed":
+        errors.append(f"{label} status must be passed, got {payload.get('status') or '<missing>'}")
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
+
+
+def validate_release_image_dependency_audit(path: Path) -> dict[str, Any]:
+    validation = validate_status_json_report(path, "release image dependency audit")
+    summary = validation["summary"]
+    errors = list(validation["errors"])
+    if summary.get("error_count") not in {0, None}:
+        errors.append("release image dependency audit summary has errors")
+    if summary.get("failed_command_count") not in {0, None}:
+        errors.append("release image dependency audit has failed commands")
+    if summary.get("release_blocking_missing_install_count") not in {0, None}:
+        errors.append("release image dependency audit has release-blocking missing installed packages")
+    if summary.get("dependency_review_status") not in {"passed", None}:
+        errors.append("release image dependency audit dependency review did not pass")
+    return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
+
+
 def validate_evidence_manifest(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {"status": "failed", "summary": {}, "errors": [f"release evidence manifest file does not exist: {path}"]}
@@ -318,6 +404,78 @@ def validate_handoff_verification(path: Path, *, expected_manifest: Path | None)
         errors.append("release handoff verification summary has failed checks")
     if summary.get("manifest_error_count") not in {0, None}:
         errors.append("release handoff verification summary has manifest errors")
+    return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
+
+
+def validate_go_live_readiness_report(path: Path) -> dict[str, Any]:
+    payload = safe_read_json(path)
+    if payload is None:
+        return {"status": "failed", "summary": {}, "errors": [f"go-live readiness report file is not valid JSON: {path}"]}
+    errors: list[str] = []
+    if payload.get("schema_version") != 1:
+        errors.append("go-live readiness report schema_version must be 1")
+    readiness_status = payload.get("status")
+    if readiness_status not in {"passed", "failed"}:
+        errors.append(f"go-live readiness report status must be passed or failed, got {readiness_status or '<missing>'}")
+    blockers = payload.get("blockers")
+    if not isinstance(blockers, list) or any(not isinstance(item, str) for item in blockers):
+        errors.append("go-live readiness report blockers must be a list of strings")
+        blockers = []
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+        errors.append("go-live readiness report warnings must be a list of strings")
+        warnings = []
+    checks = payload.get("checks")
+    if not isinstance(checks, list):
+        errors.append("go-live readiness report checks must be a list")
+        checks = []
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if not isinstance(payload.get("summary"), dict):
+        errors.append("go-live readiness report summary must be an object")
+    expected_counts = {
+        "blocker_count": len(blockers),
+        "warning_count": len(warnings),
+        "check_count": len(checks),
+    }
+    for key, expected in expected_counts.items():
+        if summary.get(key) != expected:
+            errors.append(f"go-live readiness report summary {key} mismatch: expected {expected}, got {summary.get(key)}")
+    return {
+        "status": "passed" if not errors else "failed",
+        "summary": {
+            "readiness_status": readiness_status,
+            "check_count": len(checks),
+            "blocker_count": len(blockers),
+            "warning_count": len(warnings),
+        },
+        "errors": errors,
+    }
+
+
+def validate_go_live_readiness_verification(path: Path, *, expected_report: Path | None) -> dict[str, Any]:
+    payload = safe_read_json(path)
+    if payload is None:
+        return {
+            "status": "failed",
+            "summary": {},
+            "errors": [f"go-live readiness verification file is not valid JSON: {path}"],
+        }
+    errors: list[str] = []
+    if payload.get("schema_version") != 1:
+        errors.append("go-live readiness verification schema_version must be 1")
+    if payload.get("status") != "passed":
+        errors.append(f"go-live readiness verification status must be passed, got {payload.get('status') or '<missing>'}")
+    if expected_report is None:
+        errors.append("go-live readiness verification cannot be validated without a readiness report")
+    else:
+        validate_report_path(payload, "report_path", expected_report, "go-live readiness verification", errors)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if summary.get("error_count") not in {0, None}:
+        errors.append("go-live readiness verification summary has errors")
+    if summary.get("unexpected_blocker_count") not in {0, None}:
+        errors.append("go-live readiness verification has unexpected blockers")
+    if summary.get("missing_allowed_blocker_count") not in {0, None}:
+        errors.append("go-live readiness verification has missing allowed blockers")
     return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
 
 
@@ -471,9 +629,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preflight-report", type=Path, default=DEFAULT_PREFLIGHT_REPORT)
     parser.add_argument("--preflight-verification", type=Path, default=DEFAULT_PREFLIGHT_VERIFICATION)
     parser.add_argument("--dependency-inventory", type=Path, default=DEFAULT_DEPENDENCY_INVENTORY)
+    parser.add_argument("--dependency-review-audit", type=Path)
+    parser.add_argument("--release-image-dependency-audit", type=Path)
     parser.add_argument("--evidence-dir", type=Path, default=DEFAULT_EVIDENCE_DIR)
     parser.add_argument("--handoff-manifest", type=Path)
     parser.add_argument("--handoff-verification", type=Path)
+    parser.add_argument("--go-live-readiness", type=Path)
+    parser.add_argument("--go-live-readiness-verification", type=Path)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--allow-skipped-frontend", action="store_true")
     parser.add_argument("--frontend-build-job", default=None)
@@ -487,9 +649,13 @@ def main(argv: list[str] | None = None) -> int:
         preflight_report=args.preflight_report,
         preflight_verification=args.preflight_verification,
         dependency_inventory=args.dependency_inventory,
+        dependency_review_audit=args.dependency_review_audit,
+        release_image_dependency_audit=args.release_image_dependency_audit,
         evidence_dir=args.evidence_dir,
         handoff_manifest=args.handoff_manifest,
         handoff_verification=args.handoff_verification,
+        go_live_readiness=args.go_live_readiness,
+        go_live_readiness_verification=args.go_live_readiness_verification,
         output_path=args.output,
         allow_skipped_frontend=args.allow_skipped_frontend,
         frontend_build_job=args.frontend_build_job,

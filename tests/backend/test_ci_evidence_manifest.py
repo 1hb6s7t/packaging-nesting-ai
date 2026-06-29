@@ -12,6 +12,8 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "ci_evidence_manifest.py"
 VERIFY_SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_ci_evidence_manifest.py"
 HANDOFF_SCRIPT_PATH = REPO_ROOT / "scripts" / "release_handoff_bundle.py"
 HANDOFF_VERIFY_SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_release_handoff_bundle.py"
+PRODUCTION_ENV_BLOCKER = "production env audit artifact must be passed, got skipped"
+EXTERNAL_ACCEPTANCE_BLOCKER = "external acceptance audit artifact must be passed, got skipped"
 
 
 def load_ci_evidence_manifest_module():
@@ -79,6 +81,30 @@ def test_ci_evidence_manifest_hashes_ci_reports_and_evidence_artifacts(tmp_path:
     assert by_name["release_evidence_artifact:repository_hygiene_audit"]["status"] == "passed"
 
 
+def test_ci_evidence_manifest_includes_release_image_dependency_artifacts_when_provided(tmp_path: Path) -> None:
+    module = load_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+
+    manifest = module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        dependency_review_audit=paths["dependency_review_audit"],
+        release_image_dependency_audit=paths["release_image_dependency_audit"],
+        evidence_dir=paths["evidence_dir"],
+        output_path=tmp_path / "ci-evidence-manifest.json",
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    assert manifest["status"] == "passed"
+    assert by_name["dependency_review_audit"]["sha256"] == sha256_file(paths["dependency_review_audit"])
+    assert by_name["release_image_dependency_audit"]["sha256"] == sha256_file(paths["release_image_dependency_audit"])
+    assert by_name["release_image_dependency_audit"]["summary"]["release_blocking_missing_install_count"] == 0
+
+
 def test_ci_evidence_manifest_includes_release_handoff_bundle_when_provided(tmp_path: Path) -> None:
     module = load_ci_evidence_manifest_module()
     paths = write_complete_ci_evidence(tmp_path)
@@ -102,6 +128,64 @@ def test_ci_evidence_manifest_includes_release_handoff_bundle_when_provided(tmp_
     assert by_name["release_handoff_manifest"]["sha256"] == sha256_file(paths["handoff_manifest"])
     assert by_name["release_handoff_verification"]["sha256"] == sha256_file(paths["handoff_verification"])
     assert by_name["release_handoff_manifest"]["summary"]["failed_count"] == 0
+
+
+def test_ci_evidence_manifest_includes_go_live_readiness_when_provided(tmp_path: Path) -> None:
+    module = load_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    write_handoff_outputs(paths, tmp_path)
+    write_go_live_readiness_outputs(paths)
+
+    manifest = module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        handoff_manifest=paths["handoff_manifest"],
+        handoff_verification=paths["handoff_verification"],
+        go_live_readiness=paths["go_live_readiness"],
+        go_live_readiness_verification=paths["go_live_readiness_verification"],
+        output_path=tmp_path / "ci-evidence-manifest.json",
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    assert manifest["status"] == "passed"
+    assert by_name["go_live_readiness_report"]["sha256"] == sha256_file(paths["go_live_readiness"])
+    assert by_name["go_live_readiness_report"]["summary"]["readiness_status"] == "failed"
+    assert by_name["go_live_readiness_verification"]["sha256"] == sha256_file(paths["go_live_readiness_verification"])
+    assert by_name["go_live_readiness_verification"]["summary"]["error_count"] == 0
+
+
+def test_ci_evidence_manifest_rejects_go_live_verification_for_different_report(tmp_path: Path) -> None:
+    module = load_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    write_handoff_outputs(paths, tmp_path)
+    write_go_live_readiness_outputs(paths)
+    verification = json.loads(paths["go_live_readiness_verification"].read_text(encoding="utf-8"))
+    verification["report_path"] = str((tmp_path / "other-go-live-readiness.json").resolve())
+    write_json(paths["go_live_readiness_verification"], verification)
+
+    manifest = module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        handoff_manifest=paths["handoff_manifest"],
+        handoff_verification=paths["handoff_verification"],
+        go_live_readiness=paths["go_live_readiness"],
+        go_live_readiness_verification=paths["go_live_readiness_verification"],
+        output_path=tmp_path / "ci-evidence-manifest.json",
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+
+    assert manifest["status"] == "failed"
+    assert "go_live_readiness_verification" in manifest["summary"]["failed_artifacts"]
+    assert any("go-live readiness verification report_path must match" in error for error in manifest["errors"])
 
 
 def test_ci_evidence_manifest_rejects_handoff_verification_for_different_manifest(tmp_path: Path) -> None:
@@ -343,6 +427,7 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
     dependency_inventory = tmp_path / "ci-dependency-inventory.json"
     evidence_dependency_inventory = evidence_dir / "dependency-inventory.json"
     dependency_review = evidence_dir / "dependency-review-audit.json"
+    release_image_dependency_audit = tmp_path / "ci-release-image-dependency-audit.json"
     deployment_compose = evidence_dir / "deployment-compose-audit.json"
     repository_hygiene = evidence_dir / "repository-hygiene-audit.json"
     evidence_manifest = evidence_dir / "release-evidence-pack.json"
@@ -351,6 +436,8 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
     preflight_verification = tmp_path / "ci-release-preflight-verification.json"
     handoff_manifest = tmp_path / "ci-release-handoff-bundle.json"
     handoff_verification = tmp_path / "ci-release-handoff-verification.json"
+    go_live_readiness = tmp_path / "ci-go-live-readiness.json"
+    go_live_readiness_verification = tmp_path / "ci-go-live-readiness-verification.json"
 
     inventory_payload = {
         "schema_version": 1,
@@ -366,6 +453,25 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
             "schema_version": 1,
             "status": "passed",
             "summary": {"review_required_count": 0, "approved_count": 0},
+        },
+    )
+    write_json(
+        release_image_dependency_audit,
+        {
+            "schema_version": 1,
+            "status": "passed",
+            "summary": {
+                "command_count": 2,
+                "failed_command_count": 0,
+                "missing_install_count": 1,
+                "release_blocking_missing_install_count": 0,
+                "review_required_count": 0,
+                "dependency_review_status": "passed",
+                "error_count": 0,
+                "warning_count": 0,
+            },
+            "errors": [],
+            "warnings": [],
         },
     )
     write_json(
@@ -498,10 +604,14 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         "repository_hygiene_audit": repository_hygiene,
         "evidence_manifest": evidence_manifest,
         "evidence_verification": evidence_verification,
+        "dependency_review_audit": dependency_review,
+        "release_image_dependency_audit": release_image_dependency_audit,
         "preflight_report": preflight_report,
         "preflight_verification": preflight_verification,
         "handoff_manifest": handoff_manifest,
         "handoff_verification": handoff_verification,
+        "go_live_readiness": go_live_readiness,
+        "go_live_readiness_verification": go_live_readiness_verification,
     }
 
 
@@ -518,6 +628,58 @@ def write_handoff_outputs(paths: dict[str, Path], tmp_path: Path) -> None:
         (tmp_path / source.name).write_bytes(source.read_bytes())
     verification = verify_handoff_module.verify_release_handoff_bundle(paths["handoff_manifest"], base_dir=tmp_path)
     verify_handoff_module.write_json(paths["handoff_verification"], verification)
+
+
+def write_go_live_readiness_outputs(paths: dict[str, Path]) -> None:
+    blockers = [PRODUCTION_ENV_BLOCKER, EXTERNAL_ACCEPTANCE_BLOCKER]
+    checks = [
+        {"name": "handoff_manifest", "status": "passed", "summary": {}, "errors": []},
+        {"name": "go_live_evidence", "status": "failed", "summary": {}, "errors": blockers},
+    ]
+    write_json(
+        paths["go_live_readiness"],
+        {
+            "schema_version": 1,
+            "generated_at": "2026-06-29T00:00:00+00:00",
+            "status": "failed",
+            "handoff_manifest": str(paths["handoff_manifest"].resolve()),
+            "handoff_verification": str(paths["handoff_verification"].resolve()),
+            "summary": {
+                "check_count": len(checks),
+                "passed_check_count": 1,
+                "failed_check_count": 1,
+                "blocker_count": len(blockers),
+                "warning_count": 0,
+            },
+            "blockers": blockers,
+            "warnings": [],
+            "checks": checks,
+        },
+    )
+    write_json(
+        paths["go_live_readiness_verification"],
+        {
+            "schema_version": 1,
+            "generated_at": "2026-06-29T00:00:00+00:00",
+            "report_path": str(paths["go_live_readiness"].resolve()),
+            "report_status": "failed",
+            "status": "passed",
+            "summary": {
+                "check_count": len(checks),
+                "blocker_count": len(blockers),
+                "allowed_blocker_count": len(blockers),
+                "unexpected_blocker_count": 0,
+                "missing_allowed_blocker_count": 0,
+                "warning_count": 0,
+                "error_count": 0,
+            },
+            "allowed_blockers": blockers,
+            "unexpected_blockers": [],
+            "missing_allowed_blockers": [],
+            "errors": [],
+            "warnings": [],
+        },
+    )
 
 
 def command_gate(name: str, payload: dict | None = None) -> dict:

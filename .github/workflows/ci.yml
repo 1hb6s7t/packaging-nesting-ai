@@ -75,7 +75,7 @@ jobs:
   release-preflight:
     name: Release preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     needs:
       - backend-tests
       - frontend-build
@@ -112,12 +112,21 @@ jobs:
             --output tmp/ci-release-preflight-verification.json \
             --allow-skipped-frontend
 
+      - name: Run release image dependency audit
+        run: |
+          python scripts/release_image_dependency_audit.py \
+            --inventory-output tmp/ci-release-image-dependency-inventory.json \
+            --review-output tmp/ci-release-image-dependency-review.json \
+            --output tmp/ci-release-image-dependency-audit.json
+
       - name: Build release handoff bundle
         run: |
           python scripts/release_handoff_bundle.py \
             --preflight-report tmp/ci-release-preflight.json \
             --preflight-verification tmp/ci-release-preflight-verification.json \
-            --dependency-inventory tmp/ci-dependency-inventory.json \
+            --dependency-inventory tmp/ci-release-image-dependency-inventory.json \
+            --dependency-review-audit tmp/ci-release-image-dependency-review.json \
+            --release-image-dependency-audit tmp/ci-release-image-dependency-audit.json \
             --output tmp/ci-release-handoff-bundle.json
 
       - name: Verify release handoff bundle
@@ -126,15 +135,41 @@ jobs:
             --manifest tmp/ci-release-handoff-bundle.json \
             --output tmp/ci-release-handoff-verification.json
 
+      - name: Run go-live readiness dry run
+        run: |
+          set +e
+          python scripts/go_live_readiness_audit.py \
+            --handoff-manifest tmp/ci-release-handoff-bundle.json \
+            --handoff-verification tmp/ci-release-handoff-verification.json \
+            --output tmp/ci-go-live-readiness.json
+          status=$?
+          set -e
+          if [ "$status" -ne 1 ]; then
+            echo "expected go-live readiness dry run to exit 1 while production and external acceptance evidence are intentionally absent"
+            exit 1
+          fi
+
+      - name: Verify go-live readiness dry run
+        run: |
+          python scripts/verify_go_live_readiness_report.py \
+            --report tmp/ci-go-live-readiness.json \
+            --output tmp/ci-go-live-readiness-verification.json \
+            --allow-blocker "production env audit artifact must be passed, got skipped" \
+            --allow-blocker "external acceptance audit artifact must be passed, got skipped"
+
       - name: Build CI evidence manifest
         run: |
           python scripts/ci_evidence_manifest.py \
             --preflight-report tmp/ci-release-preflight.json \
             --preflight-verification tmp/ci-release-preflight-verification.json \
-            --dependency-inventory tmp/ci-dependency-inventory.json \
+            --dependency-inventory tmp/ci-release-image-dependency-inventory.json \
+            --dependency-review-audit tmp/ci-release-image-dependency-review.json \
+            --release-image-dependency-audit tmp/ci-release-image-dependency-audit.json \
             --evidence-dir tmp/ci-release-evidence \
             --handoff-manifest tmp/ci-release-handoff-bundle.json \
             --handoff-verification tmp/ci-release-handoff-verification.json \
+            --go-live-readiness tmp/ci-go-live-readiness.json \
+            --go-live-readiness-verification tmp/ci-go-live-readiness-verification.json \
             --output tmp/ci-evidence-manifest.json \
             --allow-skipped-frontend \
             --frontend-build-job "Frontend build" \
@@ -158,7 +193,12 @@ jobs:
             tmp/ci-release-preflight-verification.json
             tmp/ci-release-handoff-bundle.json
             tmp/ci-release-handoff-verification.json
+            tmp/ci-go-live-readiness.json
+            tmp/ci-go-live-readiness-verification.json
             tmp/ci-dependency-inventory.json
+            tmp/ci-release-image-dependency-inventory.json
+            tmp/ci-release-image-dependency-review.json
+            tmp/ci-release-image-dependency-audit.json
             tmp/ci-release-evidence/**
           if-no-files-found: warn
           retention-days: 30

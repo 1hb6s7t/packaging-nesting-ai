@@ -44,10 +44,15 @@ CI artifacts:
 - `frontend-dist-<commit>` keeps the production frontend build for 7 days.
 - `release-preflight-evidence-<commit>` keeps the preflight report,
   verification report, release handoff bundle, handoff verification report,
-  dependency inventory, generated evidence-pack files, and
+  go-live readiness dry-run report, go-live readiness verification report,
+  dependency inventory, release image dependency inventory/review/audit files,
+  generated evidence-pack files, and
   `ci-evidence-manifest.json` for 30 days. The CI evidence manifest records the
-  GitHub run context plus SHA-256 hashes for the uploaded release evidence and
-  handoff files, so the downloaded artifact can be reviewed offline.
+  GitHub run context plus SHA-256 hashes for the uploaded release evidence,
+  release image dependency evidence, handoff files, and go-live readiness dry-run
+  files, so the downloaded artifact can be reviewed offline. The CI dry run
+  intentionally has no real production environment audit or external acceptance
+  audit input; only those two known blockers are allowed.
 
 After downloading and extracting `release-preflight-evidence-<commit>`, verify
 the artifact contents from the repository root with:
