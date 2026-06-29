@@ -34,6 +34,14 @@ def test_deployment_compose_audit_passes_default_local_compose_with_demo_warning
     assert report["summary"]["error_count"] == 0
     assert report["summary"]["warning_count"] == 1
     assert report["summary"]["local_demo_value_count"] > 0
+    assert report["policy_contract"]["status"] == "warning"
+    assert report["policy_contract"]["failed_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "warning"
+    assert report["summary"]["policy_contract_warning_count"] == 1
+    assert any(
+        check["code"] == "compose.local_demo_defaults"
+        for check in report["policy_contract"]["warning_checks"]
+    )
     by_name = {item["name"]: item for item in report["checks"]}
     assert by_name["compose.required_services"]["status"] == "passed"
     assert by_name["compose.local_demo_defaults"]["status"] == "warning"
@@ -54,6 +62,11 @@ def test_deployment_compose_audit_fails_demo_defaults_when_service_declares_prod
     assert report["status"] == "failed"
     assert by_name["compose.local_demo_defaults"]["status"] == "failed"
     assert by_name["compose.local_demo_defaults"]["evidence"]["production_services"] == ["api"]
+    assert report["policy_contract"]["status"] == "failed"
+    assert any(
+        check["code"] == "compose.local_demo_defaults"
+        for check in report["policy_contract"]["failed_checks"]
+    )
 
 
 def test_deployment_compose_audit_fails_frontend_dockerfile_without_lockfile_install(tmp_path: Path) -> None:
@@ -78,6 +91,10 @@ def test_deployment_compose_audit_fails_frontend_dockerfile_without_lockfile_ins
     assert report["status"] == "failed"
     assert by_name["dockerfile.frontend.lockfile_install"]["status"] == "failed"
     assert len(by_name["dockerfile.frontend.lockfile_install"]["evidence"]["failures"]) >= 2
+    assert any(
+        check["code"] == "dockerfile.frontend.lockfile"
+        for check in report["policy_contract"]["failed_checks"]
+    )
 
 
 def test_deployment_compose_audit_requires_backend_optimization_extra(tmp_path: Path) -> None:
@@ -105,6 +122,10 @@ def test_deployment_compose_audit_requires_backend_optimization_extra(tmp_path: 
     assert "backend image must install the packaged app with optimization extra" in by_name[
         "dockerfile.backend.runtime"
     ]["evidence"]["failures"]
+    assert any(
+        check["code"] == "dockerfile.backend.runtime"
+        for check in report["policy_contract"]["failed_checks"]
+    )
 
 
 def test_deployment_compose_audit_cli_writes_report_and_returns_nonzero_for_production_demo_defaults(

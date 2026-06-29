@@ -50,15 +50,17 @@ def build_deployment_compose_audit_report(
     check_backend_dockerfile(resolved_backend_dockerfile, checks)
     check_frontend_dockerfile(resolved_frontend_dockerfile, checks)
 
-    summary = build_summary(checks, services)
+    policy_contract = validate_deployment_compose_policy_contract(checks, services)
+    summary = build_summary(checks, services, policy_contract)
     return {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
-        "status": "passed" if summary["error_count"] == 0 else "failed",
+        "status": "passed" if summary["error_count"] == 0 and summary["policy_contract_failed_count"] == 0 else "failed",
         "compose_path": str(resolved_compose),
         "backend_dockerfile": str(resolved_backend_dockerfile),
         "frontend_dockerfile": str(resolved_frontend_dockerfile),
         "summary": summary,
+        "policy_contract": policy_contract,
         "checks": checks,
         "compose_metadata": {
             "top_level_keys": sorted(compose.keys()) if isinstance(compose, dict) else [],
@@ -371,12 +373,250 @@ def services_with_production_env(services: dict[str, Any]) -> list[str]:
     return sorted(production_services)
 
 
-def build_summary(checks: list[dict[str, Any]], services: dict[str, Any] | None) -> dict[str, Any]:
+def validate_deployment_compose_policy_contract(
+    checks: list[dict[str, Any]],
+    services: dict[str, Any] | None,
+) -> dict[str, Any]:
+    check_by_name = {str(item.get("name")): item for item in checks}
+    local_demo_check = check_by_name.get("compose.local_demo_defaults", {})
+    local_demo_status = str(local_demo_check.get("status") or "failed")
+    checks_out = [
+        policy_check(
+            code="compose.required_services",
+            status=aggregate_check_status(check_by_name, ["compose.required_services"]),
+            message="Compose declares every required service"
+            if aggregate_check_status(check_by_name, ["compose.required_services"]) == "passed"
+            else "Compose must declare postgres, redis, minio, api, worker, scheduler, and frontend",
+            evidence=required_services_evidence(check_by_name, services),
+        ),
+        policy_check(
+            code="compose.healthchecks",
+            status=aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.healthcheck.postgres",
+                    "compose.healthcheck.redis",
+                    "compose.healthcheck.api",
+                ],
+            ),
+            message="Core service healthchecks are configured"
+            if aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.healthcheck.postgres",
+                    "compose.healthcheck.redis",
+                    "compose.healthcheck.api",
+                ],
+            )
+            == "passed"
+            else "Postgres, Redis, and API healthchecks must be configured",
+            evidence=checks_status_evidence(
+                check_by_name,
+                [
+                    "compose.healthcheck.postgres",
+                    "compose.healthcheck.redis",
+                    "compose.healthcheck.api",
+                ],
+            ),
+        ),
+        policy_check(
+            code="compose.dependencies",
+            status=aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.depends_on.api",
+                    "compose.depends_on.worker",
+                    "compose.depends_on.scheduler",
+                    "compose.depends_on.frontend",
+                ],
+            ),
+            message="Runtime services wait for their required dependencies"
+            if aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.depends_on.api",
+                    "compose.depends_on.worker",
+                    "compose.depends_on.scheduler",
+                    "compose.depends_on.frontend",
+                ],
+            )
+            == "passed"
+            else "Runtime services must wait for healthy dependencies",
+            evidence=checks_status_evidence(
+                check_by_name,
+                [
+                    "compose.depends_on.api",
+                    "compose.depends_on.worker",
+                    "compose.depends_on.scheduler",
+                    "compose.depends_on.frontend",
+                ],
+            ),
+        ),
+        policy_check(
+            code="compose.image_tags",
+            status=aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.image_tag.postgres",
+                    "compose.image_tag.redis",
+                    "compose.image_tag.minio",
+                ],
+            ),
+            message="External service images use explicit non-latest tags"
+            if aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.image_tag.postgres",
+                    "compose.image_tag.redis",
+                    "compose.image_tag.minio",
+                ],
+            )
+            == "passed"
+            else "External service images must use explicit non-latest tags",
+            evidence=checks_status_evidence(
+                check_by_name,
+                [
+                    "compose.image_tag.postgres",
+                    "compose.image_tag.redis",
+                    "compose.image_tag.minio",
+                ],
+            ),
+        ),
+        policy_check(
+            code="compose.backend_environment",
+            status=aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.backend_environment.api",
+                    "compose.backend_environment.worker",
+                    "compose.backend_environment.scheduler",
+                ],
+            ),
+            message="Backend runtime services use MinIO and Celery environment"
+            if aggregate_check_status(
+                check_by_name,
+                [
+                    "compose.backend_environment.api",
+                    "compose.backend_environment.worker",
+                    "compose.backend_environment.scheduler",
+                ],
+            )
+            == "passed"
+            else "Backend runtime services must declare MinIO and Celery environment",
+            evidence=checks_status_evidence(
+                check_by_name,
+                [
+                    "compose.backend_environment.api",
+                    "compose.backend_environment.worker",
+                    "compose.backend_environment.scheduler",
+                ],
+            ),
+        ),
+        policy_check(
+            code="compose.local_demo_defaults",
+            status=local_demo_status if local_demo_status in {"passed", "warning"} else "failed",
+            message="Local demo defaults are absent or explicitly limited to non-production"
+            if local_demo_status in {"passed", "warning"}
+            else "Production compose services must not use local demo defaults",
+            evidence=dict(local_demo_check.get("evidence") or {}),
+        ),
+        policy_check(
+            code="dockerfile.backend.runtime",
+            status=aggregate_check_status(check_by_name, ["dockerfile.backend.runtime"]),
+            message="Backend Dockerfile keeps release runtime reproducible"
+            if aggregate_check_status(check_by_name, ["dockerfile.backend.runtime"]) == "passed"
+            else "Backend Dockerfile must install the optimized app and production driver",
+            evidence=checks_status_evidence(check_by_name, ["dockerfile.backend.runtime"]),
+        ),
+        policy_check(
+            code="dockerfile.frontend.lockfile",
+            status=aggregate_check_status(check_by_name, ["dockerfile.frontend.lockfile_install"]),
+            message="Frontend Dockerfile uses lockfile based dependency installation"
+            if aggregate_check_status(check_by_name, ["dockerfile.frontend.lockfile_install"]) == "passed"
+            else "Frontend Dockerfile must use package-lock.json with npm ci",
+            evidence=checks_status_evidence(check_by_name, ["dockerfile.frontend.lockfile_install"]),
+        ),
+    ]
+    failed_count = sum(1 for check in checks_out if check["status"] == "failed")
+    warning_count = sum(1 for check in checks_out if check["status"] == "warning")
+    passed_count = sum(1 for check in checks_out if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks_out if check["status"] == "failed"],
+        "warning_checks": [check for check in checks_out if check["status"] == "warning"],
+        "checks": checks_out,
+    }
+
+
+def aggregate_check_status(check_by_name: dict[str, dict[str, Any]], names: list[str]) -> str:
+    statuses = [str(check_by_name.get(name, {}).get("status") or "failed") for name in names]
+    if any(status == "failed" for status in statuses):
+        return "failed"
+    if any(status == "warning" for status in statuses):
+        return "warning"
+    return "passed"
+
+
+def checks_status_evidence(check_by_name: dict[str, dict[str, Any]], names: list[str]) -> dict[str, Any]:
+    return {
+        "checks": {
+            name: str(check_by_name.get(name, {}).get("status") or "missing")
+            for name in names
+        },
+        "failed_checks": [
+            name
+            for name in names
+            if str(check_by_name.get(name, {}).get("status") or "failed") == "failed"
+        ],
+        "warning_checks": [
+            name
+            for name in names
+            if str(check_by_name.get(name, {}).get("status") or "") == "warning"
+        ],
+    }
+
+
+def required_services_evidence(
+    check_by_name: dict[str, dict[str, Any]],
+    services: dict[str, Any] | None,
+) -> dict[str, Any]:
+    evidence = dict(check_by_name.get("compose.required_services", {}).get("evidence") or {})
+    evidence["service_count"] = len(services) if isinstance(services, dict) else 0
+    return evidence
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
+
+
+def build_summary(
+    checks: list[dict[str, Any]],
+    services: dict[str, Any] | None,
+    policy_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     failed = [item for item in checks if item["status"] == "failed"]
     warnings = [item for item in checks if item["status"] == "warning"]
     passed = [item for item in checks if item["status"] == "passed"]
     local_demo_check = next((item for item in checks if item["name"] == "compose.local_demo_defaults"), {})
     local_demo_evidence = local_demo_check.get("evidence") if isinstance(local_demo_check, dict) else {}
+    policy = policy_contract or {}
+    policy_failed_count = int(policy.get("failed_count") or 0)
+    policy_warning_count = int(policy.get("warning_count") or 0)
     return {
         "service_count": len(services) if isinstance(services, dict) else 0,
         "check_count": len(checks),
@@ -391,6 +631,9 @@ def build_summary(checks: list[dict[str, Any]], services: dict[str, Any] | None)
         "production_mode_service_count": len(local_demo_evidence.get("production_services") or [])
         if isinstance(local_demo_evidence, dict)
         else 0,
+        "policy_contract_status": policy.get("status"),
+        "policy_contract_failed_count": policy_failed_count,
+        "policy_contract_warning_count": policy_warning_count,
     }
 
 
