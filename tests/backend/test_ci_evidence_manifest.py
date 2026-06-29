@@ -10,6 +10,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci_evidence_manifest.py"
 VERIFY_SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_ci_evidence_manifest.py"
+HANDOFF_SCRIPT_PATH = REPO_ROOT / "scripts" / "release_handoff_bundle.py"
+HANDOFF_VERIFY_SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_release_handoff_bundle.py"
 
 
 def load_ci_evidence_manifest_module():
@@ -24,6 +26,16 @@ def load_ci_evidence_manifest_module():
 
 def load_verify_ci_evidence_manifest_module():
     spec = importlib.util.spec_from_file_location("verify_ci_evidence_manifest", VERIFY_SCRIPT_PATH)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -65,6 +77,57 @@ def test_ci_evidence_manifest_hashes_ci_reports_and_evidence_artifacts(tmp_path:
         paths["deployment_compose_audit"]
     )
     assert by_name["release_evidence_artifact:repository_hygiene_audit"]["status"] == "passed"
+
+
+def test_ci_evidence_manifest_includes_release_handoff_bundle_when_provided(tmp_path: Path) -> None:
+    module = load_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    write_handoff_outputs(paths, tmp_path)
+
+    manifest = module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        handoff_manifest=paths["handoff_manifest"],
+        handoff_verification=paths["handoff_verification"],
+        output_path=tmp_path / "ci-evidence-manifest.json",
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    assert manifest["status"] == "passed"
+    assert by_name["release_handoff_manifest"]["sha256"] == sha256_file(paths["handoff_manifest"])
+    assert by_name["release_handoff_verification"]["sha256"] == sha256_file(paths["handoff_verification"])
+    assert by_name["release_handoff_manifest"]["summary"]["failed_count"] == 0
+
+
+def test_ci_evidence_manifest_rejects_handoff_verification_for_different_manifest(tmp_path: Path) -> None:
+    module = load_ci_evidence_manifest_module()
+    paths = write_complete_ci_evidence(tmp_path)
+    write_handoff_outputs(paths, tmp_path)
+    verification = json.loads(paths["handoff_verification"].read_text(encoding="utf-8"))
+    verification["manifest_path"] = str((tmp_path / "other-handoff.json").resolve())
+    write_json(paths["handoff_verification"], verification)
+
+    manifest = module.build_ci_evidence_manifest(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+        evidence_dir=paths["evidence_dir"],
+        handoff_manifest=paths["handoff_manifest"],
+        handoff_verification=paths["handoff_verification"],
+        output_path=tmp_path / "ci-evidence-manifest.json",
+        allow_skipped_frontend=True,
+        frontend_build_job="Frontend build",
+        frontend_artifact_name="frontend-dist-testsha",
+    )
+
+    assert manifest["status"] == "failed"
+    assert "release_handoff_verification" in manifest["summary"]["failed_artifacts"]
+    assert any("release handoff verification manifest_path must match" in error for error in manifest["errors"])
 
 
 def test_ci_evidence_manifest_rejects_preflight_verification_for_different_report(tmp_path: Path) -> None:
@@ -286,6 +349,8 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
     evidence_verification = evidence_dir / "release-evidence-verification.json"
     preflight_report = tmp_path / "ci-release-preflight.json"
     preflight_verification = tmp_path / "ci-release-preflight-verification.json"
+    handoff_manifest = tmp_path / "ci-release-handoff-bundle.json"
+    handoff_verification = tmp_path / "ci-release-handoff-verification.json"
 
     inventory_payload = {
         "schema_version": 1,
@@ -435,7 +500,24 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         "evidence_verification": evidence_verification,
         "preflight_report": preflight_report,
         "preflight_verification": preflight_verification,
+        "handoff_manifest": handoff_manifest,
+        "handoff_verification": handoff_verification,
     }
+
+
+def write_handoff_outputs(paths: dict[str, Path], tmp_path: Path) -> None:
+    handoff_module = load_module("release_handoff_bundle_for_ci_evidence", HANDOFF_SCRIPT_PATH)
+    verify_handoff_module = load_module("verify_release_handoff_bundle_for_ci_evidence", HANDOFF_VERIFY_SCRIPT_PATH)
+    handoff = handoff_module.build_release_handoff_bundle(
+        preflight_report=paths["preflight_report"],
+        preflight_verification=paths["preflight_verification"],
+        dependency_inventory=paths["dependency_inventory"],
+    )
+    handoff_module.write_json(paths["handoff_manifest"], handoff)
+    for source in paths["evidence_dir"].glob("*.json"):
+        (tmp_path / source.name).write_bytes(source.read_bytes())
+    verification = verify_handoff_module.verify_release_handoff_bundle(paths["handoff_manifest"], base_dir=tmp_path)
+    verify_handoff_module.write_json(paths["handoff_verification"], verification)
 
 
 def command_gate(name: str, payload: dict | None = None) -> dict:

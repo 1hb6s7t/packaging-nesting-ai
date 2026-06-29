@@ -23,6 +23,7 @@ EVIDENCE_VERIFICATION_NAME = "release-evidence-verification.json"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import verify_release_evidence_pack
+import verify_release_handoff_bundle
 import verify_release_preflight
 
 
@@ -32,6 +33,8 @@ def build_ci_evidence_manifest(
     preflight_verification: Path,
     dependency_inventory: Path | None,
     evidence_dir: Path,
+    handoff_manifest: Path | None = None,
+    handoff_verification: Path | None = None,
     output_path: Path | None = None,
     allow_skipped_frontend: bool = False,
     frontend_build_job: str | None = None,
@@ -42,6 +45,8 @@ def build_ci_evidence_manifest(
     resolved_preflight_verification = resolve_repo_path(preflight_verification)
     resolved_dependency_inventory = resolve_repo_path(dependency_inventory) if dependency_inventory else None
     resolved_evidence_dir = resolve_repo_path(evidence_dir)
+    resolved_handoff_manifest = resolve_repo_path(handoff_manifest) if handoff_manifest else None
+    resolved_handoff_verification = resolve_repo_path(handoff_verification) if handoff_verification else None
     resolved_output = resolve_repo_path(output_path) if output_path else None
     base_dir = (resolved_output.parent if resolved_output else REPO_ROOT).resolve()
 
@@ -110,6 +115,30 @@ def build_ci_evidence_manifest(
         )
     )
     artifacts.extend(build_evidence_artifact_entries(evidence_pack_validation.get("verification"), base_dir))
+
+    if resolved_handoff_manifest is not None:
+        artifacts.append(
+            build_json_artifact(
+                "release_handoff_manifest",
+                resolved_handoff_manifest,
+                base_dir,
+                required=True,
+                validation=validate_handoff_manifest(resolved_handoff_manifest),
+            )
+        )
+    if resolved_handoff_verification is not None:
+        artifacts.append(
+            build_json_artifact(
+                "release_handoff_verification",
+                resolved_handoff_verification,
+                base_dir,
+                required=True,
+                validation=validate_handoff_verification(
+                    resolved_handoff_verification,
+                    expected_manifest=resolved_handoff_manifest,
+                ),
+            )
+        )
 
     for artifact in artifacts:
         if artifact["status"] == "failed":
@@ -249,6 +278,46 @@ def validate_evidence_verification(path: Path, *, expected_manifest: Path) -> di
         errors.append("release evidence verification summary has failed checks")
     if summary.get("manifest_error_count") not in {0, None}:
         errors.append("release evidence verification summary has manifest errors")
+    return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
+
+
+def validate_handoff_manifest(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"status": "failed", "summary": {}, "errors": [f"release handoff manifest file does not exist: {path}"]}
+    verification = verify_release_handoff_bundle.verify_release_handoff_bundle(path, base_dir=REPO_ROOT)
+    if verification["status"] != "passed" and path.parent.resolve() != REPO_ROOT.resolve():
+        local_verification = verify_release_handoff_bundle.verify_release_handoff_bundle(path, base_dir=path.parent)
+        if local_verification["status"] == "passed":
+            verification = local_verification
+    errors = list(verification.get("manifest_errors") or [])
+    for check in verification.get("checks") or []:
+        if isinstance(check, dict) and check.get("status") == "failed":
+            errors.extend(f"{check.get('name')}: {error}" for error in check.get("errors") or [])
+    return {
+        "status": verification["status"],
+        "summary": verification["summary"],
+        "errors": errors,
+    }
+
+
+def validate_handoff_verification(path: Path, *, expected_manifest: Path | None) -> dict[str, Any]:
+    payload = safe_read_json(path)
+    if payload is None:
+        return {"status": "failed", "summary": {}, "errors": [f"release handoff verification file is not valid JSON: {path}"]}
+    errors: list[str] = []
+    if payload.get("schema_version") != 1:
+        errors.append("release handoff verification schema_version must be 1")
+    if payload.get("status") != "passed":
+        errors.append(f"release handoff verification status must be passed, got {payload.get('status') or '<missing>'}")
+    if expected_manifest is None:
+        errors.append("release handoff verification cannot be validated without a handoff manifest")
+    else:
+        validate_report_path(payload, "manifest_path", expected_manifest, "release handoff verification", errors)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if summary.get("failed_count") not in {0, None}:
+        errors.append("release handoff verification summary has failed checks")
+    if summary.get("manifest_error_count") not in {0, None}:
+        errors.append("release handoff verification summary has manifest errors")
     return {"status": "passed" if not errors else "failed", "summary": summary, "errors": errors}
 
 
@@ -403,6 +472,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preflight-verification", type=Path, default=DEFAULT_PREFLIGHT_VERIFICATION)
     parser.add_argument("--dependency-inventory", type=Path, default=DEFAULT_DEPENDENCY_INVENTORY)
     parser.add_argument("--evidence-dir", type=Path, default=DEFAULT_EVIDENCE_DIR)
+    parser.add_argument("--handoff-manifest", type=Path)
+    parser.add_argument("--handoff-verification", type=Path)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--allow-skipped-frontend", action="store_true")
     parser.add_argument("--frontend-build-job", default=None)
@@ -417,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         preflight_verification=args.preflight_verification,
         dependency_inventory=args.dependency_inventory,
         evidence_dir=args.evidence_dir,
+        handoff_manifest=args.handoff_manifest,
+        handoff_verification=args.handoff_verification,
         output_path=args.output,
         allow_skipped_frontend=args.allow_skipped_frontend,
         frontend_build_job=args.frontend_build_job,

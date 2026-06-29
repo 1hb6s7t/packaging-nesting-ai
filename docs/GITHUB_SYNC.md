@@ -43,10 +43,11 @@ CI artifacts:
 
 - `frontend-dist-<commit>` keeps the production frontend build for 7 days.
 - `release-preflight-evidence-<commit>` keeps the preflight report,
-  verification report, dependency inventory, generated evidence-pack files, and
+  verification report, release handoff bundle, handoff verification report,
+  dependency inventory, generated evidence-pack files, and
   `ci-evidence-manifest.json` for 30 days. The CI evidence manifest records the
-  GitHub run context plus SHA-256 hashes for the uploaded release evidence files,
-  so the downloaded artifact can be reviewed offline.
+  GitHub run context plus SHA-256 hashes for the uploaded release evidence and
+  handoff files, so the downloaded artifact can be reviewed offline.
 
 After downloading and extracting `release-preflight-evidence-<commit>`, verify
 the artifact contents from the repository root with:

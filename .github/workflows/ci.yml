@@ -112,6 +112,20 @@ jobs:
             --output tmp/ci-release-preflight-verification.json \
             --allow-skipped-frontend
 
+      - name: Build release handoff bundle
+        run: |
+          python scripts/release_handoff_bundle.py \
+            --preflight-report tmp/ci-release-preflight.json \
+            --preflight-verification tmp/ci-release-preflight-verification.json \
+            --dependency-inventory tmp/ci-dependency-inventory.json \
+            --output tmp/ci-release-handoff-bundle.json
+
+      - name: Verify release handoff bundle
+        run: |
+          python scripts/verify_release_handoff_bundle.py \
+            --manifest tmp/ci-release-handoff-bundle.json \
+            --output tmp/ci-release-handoff-verification.json
+
       - name: Build CI evidence manifest
         run: |
           python scripts/ci_evidence_manifest.py \
@@ -119,6 +133,8 @@ jobs:
             --preflight-verification tmp/ci-release-preflight-verification.json \
             --dependency-inventory tmp/ci-dependency-inventory.json \
             --evidence-dir tmp/ci-release-evidence \
+            --handoff-manifest tmp/ci-release-handoff-bundle.json \
+            --handoff-verification tmp/ci-release-handoff-verification.json \
             --output tmp/ci-evidence-manifest.json \
             --allow-skipped-frontend \
             --frontend-build-job "Frontend build" \
@@ -140,6 +156,8 @@ jobs:
             tmp/ci-evidence-manifest-verification.json
             tmp/ci-release-preflight.json
             tmp/ci-release-preflight-verification.json
+            tmp/ci-release-handoff-bundle.json
+            tmp/ci-release-handoff-verification.json
             tmp/ci-dependency-inventory.json
             tmp/ci-release-evidence/**
           if-no-files-found: warn
