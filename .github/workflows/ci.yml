@@ -64,6 +64,14 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist-${{ github.sha }}
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: 7
+
   release-preflight:
     name: Release preflight
     runs-on: ubuntu-latest
@@ -103,3 +111,16 @@ jobs:
             --report tmp/ci-release-preflight.json \
             --output tmp/ci-release-preflight-verification.json \
             --allow-skipped-frontend
+
+      - name: Upload release preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-preflight-evidence-${{ github.sha }}
+          path: |
+            tmp/ci-release-preflight.json
+            tmp/ci-release-preflight-verification.json
+            tmp/ci-dependency-inventory.json
+            tmp/ci-release-evidence/**
+          if-no-files-found: warn
+          retention-days: 30

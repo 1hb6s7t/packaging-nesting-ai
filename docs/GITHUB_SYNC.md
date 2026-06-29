@@ -38,3 +38,13 @@ workflow checks backend tests, frontend production build, and the release
 preflight report path used for handoff evidence. The preflight job allows the
 frontend gate to be skipped only because `frontend-build` is a required job in
 the same workflow.
+
+CI artifacts:
+
+- `frontend-dist-<commit>` keeps the production frontend build for 7 days.
+- `release-preflight-evidence-<commit>` keeps the preflight report,
+  verification report, dependency inventory, and generated evidence-pack files
+  for 30 days.
+
+Use the latest successful CI run as the GitHub-side proof that the pushed commit
+still passes the project gates.
