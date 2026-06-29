@@ -45,34 +45,35 @@ def build_dependency_review_audit(
         "invalid": [],
         "expired": [],
         "unmatched": [],
+        "policy_contract": {},
     }
 
     if not required_items and review_file is None:
         base_report["status"] = "passed"
-        return base_report
+        return attach_policy_contract(base_report, require_review_file=require_review_file)
 
     if review_file is None:
         base_report["missing"] = required_items
         base_report["summary"]["missing_ack_count"] = len(required_items)
         if require_review_file and required_items:
             base_report["errors"].append("dependency review file is required because inventory has review-required items")
-            return base_report
+            return attach_policy_contract(base_report, require_review_file=require_review_file)
         base_report["status"] = "skipped" if required_items else "passed"
         if required_items:
             base_report["warnings"].append("dependency review file was not provided")
-        return base_report
+        return attach_policy_contract(base_report, require_review_file=require_review_file)
 
     if not review_file.is_file():
         base_report["missing"] = required_items
         base_report["summary"]["missing_ack_count"] = len(required_items)
         base_report["errors"].append(f"dependency review file does not exist: {review_file}")
-        return base_report
+        return attach_policy_contract(base_report, require_review_file=require_review_file)
 
     try:
         review_payload = read_json(review_file)
     except Exception as exc:
         base_report["errors"].append(f"dependency review file could not be read: {exc}")
-        return base_report
+        return attach_policy_contract(base_report, require_review_file=require_review_file)
 
     document_errors = validate_review_document(review_payload)
     base_report["errors"].extend(document_errors)
@@ -135,7 +136,170 @@ def build_dependency_review_audit(
         + len(duplicate_errors)
     )
     base_report["status"] = "passed" if blocking_count == 0 else "failed"
-    return base_report
+    return attach_policy_contract(base_report, require_review_file=require_review_file)
+
+
+def attach_policy_contract(report: dict[str, Any], *, require_review_file: bool) -> dict[str, Any]:
+    policy_contract = validate_dependency_review_policy_contract(
+        report,
+        require_review_file=require_review_file,
+    )
+    report["policy_contract"] = policy_contract
+    summary = report.get("summary")
+    if isinstance(summary, dict):
+        summary["policy_contract_status"] = policy_contract.get("status")
+        summary["policy_contract_failed_count"] = int(policy_contract.get("failed_count") or 0)
+        summary["policy_contract_warning_count"] = int(policy_contract.get("warning_count") or 0)
+    if int(policy_contract.get("failed_count") or 0):
+        report["status"] = "failed"
+    return report
+
+
+def validate_dependency_review_policy_contract(
+    report: dict[str, Any],
+    *,
+    require_review_file: bool,
+) -> dict[str, Any]:
+    if report.get("status") == "skipped" and not require_review_file:
+        skipped_check = policy_check(
+            code="review.optional",
+            status="skipped",
+            message="dependency review file is optional and was not provided",
+            evidence={"require_review_file": require_review_file},
+        )
+        return {
+            "status": "skipped",
+            "passed_count": 0,
+            "warning_count": 0,
+            "failed_count": 0,
+            "failed_checks": [],
+            "warning_checks": [],
+            "checks": [skipped_check],
+        }
+
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    review_required_count = int(summary.get("review_required_count") or 0)
+    approved_count = int(summary.get("approved_count") or 0)
+    missing_ack_count = int(summary.get("missing_ack_count") or 0)
+    not_approved_count = int(summary.get("not_approved_count") or 0)
+    stale_ack_count = int(summary.get("stale_ack_count") or 0)
+    invalid_ack_count = int(summary.get("invalid_ack_count") or 0)
+    expired_ack_count = int(summary.get("expired_ack_count") or 0)
+    unmatched_ack_count = int(summary.get("unmatched_ack_count") or 0)
+    errors = list(report.get("errors") or [])
+    review_file_present = bool(report.get("review_file"))
+    file_required = require_review_file and review_required_count > 0
+    file_present_or_not_needed = review_required_count == 0 or review_file_present
+    checks = [
+        policy_check(
+            code="schema.version",
+            status="passed" if report.get("schema_version") == 1 else "failed",
+            message="dependency review audit schema_version is 1"
+            if report.get("schema_version") == 1
+            else "dependency review audit schema_version must be 1",
+            evidence={"schema_version": report.get("schema_version")},
+        ),
+        policy_check(
+            code="inventory.review_required",
+            status="passed" if isinstance(summary.get("review_required_count"), int) else "failed",
+            message="dependency inventory review-required count is captured"
+            if isinstance(summary.get("review_required_count"), int)
+            else "dependency inventory review-required count must be captured",
+            evidence={"review_required_count": summary.get("review_required_count")},
+        ),
+        policy_check(
+            code="review.file.present",
+            status="passed" if file_present_or_not_needed and not (file_required and not review_file_present) else "failed",
+            message="dependency review file is present when required"
+            if file_present_or_not_needed and not (file_required and not review_file_present)
+            else "dependency review file must be present when review-required items need signoff",
+            evidence={
+                "review_file": report.get("review_file"),
+                "require_review_file": require_review_file,
+                "review_required_count": review_required_count,
+            },
+        ),
+        policy_check(
+            code="review.document",
+            status="passed" if not errors else "failed",
+            message="dependency review document parsed and passed document validation"
+            if not errors
+            else "dependency review document must parse and pass document validation",
+            evidence={"error_count": len(errors)},
+        ),
+        policy_check(
+            code="review.coverage",
+            status="passed" if approved_count == review_required_count and missing_ack_count == 0 else "failed",
+            message="every review-required dependency has an approved acknowledgement"
+            if approved_count == review_required_count and missing_ack_count == 0
+            else "every review-required dependency must have an approved acknowledgement",
+            evidence={
+                "review_required_count": review_required_count,
+                "approved_count": approved_count,
+                "missing_ack_count": missing_ack_count,
+            },
+        ),
+        policy_check(
+            code="review.decision",
+            status="passed" if not_approved_count == 0 else "failed",
+            message="all dependency review decisions are approved"
+            if not_approved_count == 0
+            else "dependency review decisions must be approved",
+            evidence={"not_approved_count": not_approved_count},
+        ),
+        policy_check(
+            code="review.current",
+            status="passed" if stale_ack_count == 0 and expired_ack_count == 0 else "failed",
+            message="dependency review acknowledgements match current inventory and are not expired"
+            if stale_ack_count == 0 and expired_ack_count == 0
+            else "dependency review acknowledgements must match current inventory and not be expired",
+            evidence={"stale_ack_count": stale_ack_count, "expired_ack_count": expired_ack_count},
+        ),
+        policy_check(
+            code="review.metadata",
+            status="passed" if invalid_ack_count == 0 else "failed",
+            message="dependency review metadata is complete and timezone-aware"
+            if invalid_ack_count == 0
+            else "dependency review metadata must include reviewer, timezone-aware reviewed_at, reason, version, and license",
+            evidence={"invalid_ack_count": invalid_ack_count},
+        ),
+        policy_check(
+            code="review.scope",
+            status="warning" if unmatched_ack_count else "passed",
+            message="dependency review file only contains acknowledgements required by current inventory"
+            if unmatched_ack_count == 0
+            else "dependency review file contains acknowledgements not required by current inventory",
+            evidence={"unmatched_ack_count": unmatched_ack_count},
+        ),
+    ]
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
 
 
 def empty_summary(review_required_count: int) -> dict[str, int]:

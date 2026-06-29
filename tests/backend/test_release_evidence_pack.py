@@ -62,6 +62,7 @@ def test_release_evidence_pack_writes_default_local_artifacts(tmp_path: Path, mo
     assert by_name["dependency_review_audit"]["status"] == "skipped"
     assert by_name["dependency_review_audit"]["required"] is False
     assert by_name["dependency_review_audit"]["summary"]["review_required_count"] == 1
+    assert by_name["dependency_review_audit"]["summary"]["policy_contract_status"] == "skipped"
     assert by_name["external_acceptance_audit"]["status"] == "skipped"
     assert by_name["external_acceptance_audit"]["required"] is False
     assert by_name["external_acceptance_audit"]["summary"]["required_area_count"] == 5
@@ -122,6 +123,7 @@ def test_release_evidence_pack_can_require_dependency_review_file(tmp_path: Path
     assert by_name["dependency_review_audit"]["required"] is True
     assert by_name["dependency_review_audit"]["status"] == "failed"
     assert by_name["dependency_review_audit"]["summary"]["missing_ack_count"] == 1
+    assert by_name["dependency_review_audit"]["summary"]["policy_contract_status"] == "failed"
 
 
 def test_release_evidence_pack_can_require_external_acceptance_file(tmp_path: Path) -> None:
@@ -199,6 +201,7 @@ def test_release_evidence_pack_accepts_dependency_review_file(tmp_path: Path, mo
     assert by_name["dependency_review_audit"]["status"] == "passed"
     report = json.loads((output_dir / "dependency-review-audit.json").read_text(encoding="utf-8"))
     assert report["summary"]["approved_count"] == 1
+    assert report["summary"]["policy_contract_status"] == "passed"
 
 
 def test_cli_writes_manifest_and_returns_nonzero_when_artifact_fails(tmp_path: Path) -> None:

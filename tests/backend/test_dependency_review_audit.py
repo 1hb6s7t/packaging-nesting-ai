@@ -58,6 +58,10 @@ def test_dependency_review_audit_accepts_current_approved_acknowledgements(tmp_p
     assert report["status"] == "passed"
     assert report["summary"]["review_required_count"] == 1
     assert report["summary"]["approved_count"] == 1
+    assert report["policy_contract"]["status"] == "passed"
+    assert report["policy_contract"]["failed_count"] == 0
+    assert report["summary"]["policy_contract_status"] == "passed"
+    assert report["summary"]["policy_contract_failed_count"] == 0
     assert report["errors"] == []
 
 
@@ -72,9 +76,13 @@ def test_dependency_review_audit_can_skip_or_fail_when_review_file_is_missing() 
 
     assert skipped["status"] == "skipped"
     assert skipped["summary"]["missing_ack_count"] == 1
+    assert skipped["policy_contract"]["status"] == "skipped"
+    assert skipped["summary"]["policy_contract_status"] == "skipped"
     assert "dependency review file was not provided" in skipped["warnings"]
     assert failed["status"] == "failed"
     assert "dependency review file is required" in failed["errors"][0]
+    assert failed["policy_contract"]["status"] == "failed"
+    assert any(check["code"] == "review.file.present" for check in failed["policy_contract"]["failed_checks"])
 
 
 def test_dependency_review_audit_rejects_stale_invalid_or_expired_acknowledgements(tmp_path: Path) -> None:
@@ -117,6 +125,9 @@ def test_dependency_review_audit_rejects_stale_invalid_or_expired_acknowledgemen
     assert report["summary"]["expired_ack_count"] == 1
     assert report["stale"][0]["fields"] == ["version", "license"]
     assert report["invalid"][0]["fields"] == ["reviewed_at"]
+    failed_codes = {check["code"] for check in report["policy_contract"]["failed_checks"]}
+    assert "review.current" in failed_codes
+    assert "review.metadata" in failed_codes
 
 
 def test_dependency_review_audit_requires_timezone_aware_reviewed_and_expiry_times(tmp_path: Path) -> None:
@@ -156,6 +167,45 @@ def test_dependency_review_audit_requires_timezone_aware_reviewed_and_expiry_tim
     assert report["status"] == "failed"
     assert report["summary"]["invalid_ack_count"] == 1
     assert report["invalid"][0]["fields"] == ["reviewed_at", "expires_at"]
+    assert any(check["code"] == "review.metadata" for check in report["policy_contract"]["failed_checks"])
+
+
+def test_dependency_review_policy_contract_warns_for_unmatched_acknowledgements(tmp_path: Path) -> None:
+    module = load_dependency_review_audit_module()
+    review_file = tmp_path / "dependency-review.json"
+    review_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "reviewer": "delivery-owner",
+                "reviewed_at": "2026-06-29T10:00:00Z",
+                "entries": [
+                    {
+                        "ecosystem": "python",
+                        "name": "unused-lib",
+                        "scope": "runtime",
+                        "version": "1.0.0",
+                        "license": "MIT",
+                        "decision": "approved",
+                        "reason": "not needed by current inventory",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = module.build_dependency_review_audit(
+        inventory={"schema_version": 1, "summary": {"review_required_count": 0, "review_required": []}},
+        review_file=review_file,
+        now=datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
+    )
+
+    assert report["status"] == "passed"
+    assert report["policy_contract"]["status"] == "warning"
+    assert report["summary"]["policy_contract_warning_count"] == 1
+    assert any(check["code"] == "review.scope" for check in report["policy_contract"]["warning_checks"])
 
 
 def test_dependency_review_audit_cli_writes_report_and_returns_nonzero(tmp_path: Path) -> None:
@@ -178,6 +228,7 @@ def test_dependency_review_audit_cli_writes_report_and_returns_nonzero(tmp_path:
     report = json.loads(output_path.read_text(encoding="utf-8"))
     assert report["status"] == "failed"
     assert report["summary"]["missing_ack_count"] == 1
+    assert report["summary"]["policy_contract_status"] == "failed"
 
 
 def inventory_with_review_item() -> dict:
