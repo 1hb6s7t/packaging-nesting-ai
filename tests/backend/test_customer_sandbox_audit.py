@@ -30,7 +30,10 @@ def test_sample_pack_audit_passes_with_no_readiness_blockers() -> None:
     assert report["status"] == "passed"
     assert report["pack_contract"]["status"] == "passed"
     assert report["pack_contract"]["failed_count"] == 0
+    assert report["business_flow_contract"]["status"] == "passed"
+    assert report["business_flow_contract"]["failed_count"] == 0
     assert report["summary"]["pack_contract_status"] == "passed"
+    assert report["summary"]["business_flow_status"] == "passed"
     assert report["summary"]["adapter_count"] == 4
     assert report["summary"]["adapter_passed_count"] == 4
     assert report["summary"]["failed_count"] == 0
@@ -38,6 +41,62 @@ def test_sample_pack_audit_passes_with_no_readiness_blockers() -> None:
     assert report["readiness"]["status"] in {"ready", "warning"}
     assert all("config" not in adapter for adapter in report["adapters"])
     assert {adapter["system_type"] for adapter in report["adapters"]} == {"crm", "mes", "erp"}
+
+
+def test_audit_fails_when_mes_order_does_not_link_to_crm(tmp_path: Path) -> None:
+    module = load_customer_sandbox_audit_module()
+    pack = json.loads(SAMPLE_PACK_PATH.read_text(encoding="utf-8"))
+    broken_pack = copy.deepcopy(pack)
+    broken_pack["mes"]["config"]["pages"][0]["data"]["jobs"][0]["orderId"] = "CRM-SBX-MISSING"
+    pack_path = tmp_path / "broken-mes-link-pack.json"
+    pack_path.write_text(json.dumps(broken_pack), encoding="utf-8")
+
+    report = module.build_customer_sandbox_audit_report(pack_path)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["business_flow_failed_count"] == 1
+    assert report["summary"]["adapter_count"] == 0
+    failed_check = report["business_flow_contract"]["failed_checks"][0]
+    assert failed_check["code"] == "business_flow.mes_orders.link_crm"
+    assert failed_check["evidence"]["missing_crm_order_ids"] == ["CRM-SBX-MISSING"]
+
+
+def test_audit_fails_when_erp_delivery_exceeds_crm_quantity(tmp_path: Path) -> None:
+    module = load_customer_sandbox_audit_module()
+    pack = json.loads(SAMPLE_PACK_PATH.read_text(encoding="utf-8"))
+    broken_pack = copy.deepcopy(pack)
+    broken_pack["erp_delivery"]["config"]["sample_records"][0]["qty"] = 1201
+    pack_path = tmp_path / "broken-delivery-quantity-pack.json"
+    pack_path.write_text(json.dumps(broken_pack), encoding="utf-8")
+
+    report = module.build_customer_sandbox_audit_report(pack_path)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["business_flow_failed_count"] == 1
+    assert any(
+        check["code"] == "business_flow.delivery.quantity_within_order"
+        and check["evidence"]["over_delivered"][0]["order_id"] == "CRM-SBX-1001"
+        for check in report["business_flow_contract"]["failed_checks"]
+    )
+
+
+def test_audit_fails_when_erp_inventory_does_not_cover_crm_material(tmp_path: Path) -> None:
+    module = load_customer_sandbox_audit_module()
+    pack = json.loads(SAMPLE_PACK_PATH.read_text(encoding="utf-8"))
+    broken_pack = copy.deepcopy(pack)
+    broken_pack["erp_inventory"]["config"]["sample_records"][0]["material"]["code"] = "OTHER-MATERIAL"
+    pack_path = tmp_path / "broken-inventory-material-pack.json"
+    pack_path.write_text(json.dumps(broken_pack), encoding="utf-8")
+
+    report = module.build_customer_sandbox_audit_report(pack_path)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["business_flow_failed_count"] == 1
+    assert any(
+        check["code"] == "business_flow.inventory.material_coverage"
+        and check["evidence"]["missing_material_codes"] == ["WHITE-350"]
+        for check in report["business_flow_contract"]["failed_checks"]
+    )
 
 
 def test_audit_fails_when_required_sample_records_are_missing(tmp_path: Path) -> None:

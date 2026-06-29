@@ -99,6 +99,7 @@ def build_customer_sandbox_audit_report(
         "summary": {},
         "organization": {},
         "pack_contract": {},
+        "business_flow_contract": {},
         "adapters": [],
         "readiness": {},
         "errors": [],
@@ -122,6 +123,10 @@ def build_customer_sandbox_audit_report(
 
     report["pack_contract"] = validate_pack_contract(pack, required_system_types=required_types)
     if report["pack_contract"]["failed_count"]:
+        report["summary"] = build_summary(report, required_types)
+        return report
+    report["business_flow_contract"] = validate_business_flow_contract(pack, required_system_types=required_types)
+    if report["business_flow_contract"]["failed_count"]:
         report["summary"] = build_summary(report, required_types)
         return report
 
@@ -601,6 +606,228 @@ def validate_organization_acceptance_contract(
     ]
 
 
+def validate_business_flow_contract(pack: dict[str, Any], *, required_system_types: list[str]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    required_keys = set(required_sample_keys(required_system_types))
+    crm_records = business_records_for_sample(pack, "crm")
+    mes_records = business_records_for_sample(pack, "mes")
+    inventory_records = business_records_for_sample(pack, "erp_inventory")
+    delivery_records = business_records_for_sample(pack, "erp_delivery")
+    crm_orders = {
+        str(record["order_id"]): record
+        for record in crm_records
+        if present(record.get("order_id"))
+    }
+
+    checks.append(
+        pack_contract_check(
+            code="business_flow.crm_orders",
+            status="passed" if crm_orders else "failed",
+            message=(
+                "CRM samples expose order identifiers for cross-system linking"
+                if crm_orders
+                else "CRM samples must expose order identifiers for cross-system linking"
+            ),
+            evidence={"order_ids": sorted(crm_orders)[:20], "sample_count": len(crm_records)},
+        )
+    )
+
+    if "mes" in required_keys:
+        mes_order_ids = sorted({str(record.get("order_id")) for record in mes_records if present(record.get("order_id"))})
+        missing_mes_orders = sorted(order_id for order_id in mes_order_ids if order_id not in crm_orders)
+        checks.append(
+            pack_contract_check(
+                code="business_flow.mes_orders.link_crm",
+                status="passed" if mes_order_ids and not missing_mes_orders else "failed",
+                sample_key="mes",
+                message=(
+                    "MES schedule samples link back to CRM order samples"
+                    if mes_order_ids and not missing_mes_orders
+                    else "MES schedule samples must link back to CRM order samples"
+                ),
+                evidence={"mes_order_ids": mes_order_ids[:20], "missing_crm_order_ids": missing_mes_orders},
+            )
+        )
+
+    if "erp_inventory" in required_keys:
+        crm_materials = sorted({str(record.get("material")) for record in crm_records if present(record.get("material"))})
+        inventory_materials = sorted(
+            {str(record.get("material_code")) for record in inventory_records if present(record.get("material_code"))}
+        )
+        missing_materials = sorted(material for material in crm_materials if material not in set(inventory_materials))
+        checks.append(
+            pack_contract_check(
+                code="business_flow.inventory.material_coverage",
+                status="passed" if crm_materials and inventory_materials and not missing_materials else "failed",
+                sample_key="erp_inventory",
+                message=(
+                    "ERP inventory samples cover CRM order material codes"
+                    if crm_materials and inventory_materials and not missing_materials
+                    else "ERP inventory samples must cover CRM order material codes"
+                ),
+                evidence={
+                    "crm_materials": crm_materials[:20],
+                    "inventory_material_codes": inventory_materials[:20],
+                    "missing_material_codes": missing_materials,
+                },
+            )
+        )
+
+    if "erp_delivery" in required_keys:
+        delivery_order_ids = sorted(
+            {str(record.get("order_id")) for record in delivery_records if present(record.get("order_id"))}
+        )
+        missing_delivery_orders = sorted(order_id for order_id in delivery_order_ids if order_id not in crm_orders)
+        checks.append(
+            pack_contract_check(
+                code="business_flow.delivery_orders.link_crm",
+                status="passed" if delivery_order_ids and not missing_delivery_orders else "failed",
+                sample_key="erp_delivery",
+                message=(
+                    "ERP delivery samples link back to CRM order samples"
+                    if delivery_order_ids and not missing_delivery_orders
+                    else "ERP delivery samples must link back to CRM order samples"
+                ),
+                evidence={"delivery_order_ids": delivery_order_ids[:20], "missing_crm_order_ids": missing_delivery_orders},
+            )
+        )
+        over_delivered = delivery_quantity_overages(crm_orders, delivery_records)
+        checks.append(
+            pack_contract_check(
+                code="business_flow.delivery.quantity_within_order",
+                status="passed" if not over_delivered else "failed",
+                sample_key="erp_delivery",
+                message=(
+                    "ERP delivery sample quantities do not exceed CRM order quantities"
+                    if not over_delivered
+                    else "ERP delivery sample quantities must not exceed CRM order quantities"
+                ),
+                evidence={"over_delivered": over_delivered},
+            )
+        )
+
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def business_records_for_sample(pack: dict[str, Any], sample_key: str) -> list[dict[str, Any]]:
+    entry = pack.get(sample_key)
+    if not isinstance(entry, dict):
+        return []
+    config = entry.get("config")
+    if not isinstance(config, dict):
+        return []
+    records = configured_record_samples(config)
+    mapping = config.get("field_mapping") if isinstance(config.get("field_mapping"), dict) else {}
+    domain_target = normalize_domain_target(
+        config.get("domain_target") or config.get("domain_entity") or config.get("persist_to") or config.get("domain_table")
+    )
+    return [
+        normalize_business_record(
+            sample_key=sample_key,
+            domain_target=domain_target,
+            config=config,
+            mapping=mapping,
+            record=record,
+        )
+        for record in records
+    ]
+
+
+def normalize_business_record(
+    *,
+    sample_key: str,
+    domain_target: str | None,
+    config: dict[str, Any],
+    mapping: dict[str, Any],
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    if sample_key == "crm":
+        return {
+            "order_id": mapped_value(record, mapping, "order_id"),
+            "quantity": mapped_value(record, mapping, "quantity"),
+            "material": mapped_value(record, mapping, "material"),
+            "thickness": mapped_value(record, mapping, "thickness"),
+        }
+    if domain_target == "production_schedule":
+        return {
+            "external_id": get_path(record, str(config.get("external_id_path") or config.get("id_path") or "")),
+            "order_id": mapped_value(record, mapping, "order_id"),
+            "job_id": mapped_value(record, mapping, "job_id"),
+        }
+    if domain_target == "inventory_snapshot":
+        return {
+            "external_id": get_path(record, str(config.get("external_id_path") or config.get("id_path") or "")),
+            "material_code": mapped_value(record, mapping, "material_code"),
+            "available_qty": mapped_value(record, mapping, "available_qty"),
+            "reserved_qty": mapped_value(record, mapping, "reserved_qty"),
+        }
+    if domain_target == "delivery_confirmation":
+        return {
+            "external_id": get_path(record, str(config.get("external_id_path") or config.get("id_path") or "")),
+            "order_id": mapped_value(record, mapping, "order_id"),
+            "quantity": mapped_value(record, mapping, "quantity"),
+        }
+    return {}
+
+
+def mapped_value(record: dict[str, Any], mapping: dict[str, Any], field_name: str) -> Any:
+    source = mapping.get(field_name)
+    return get_path(record, str(source)) if source else None
+
+
+def delivery_quantity_overages(
+    crm_orders: dict[str, dict[str, Any]],
+    delivery_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    delivered_by_order: dict[str, float] = {}
+    for record in delivery_records:
+        order_id = str(record.get("order_id")) if present(record.get("order_id")) else ""
+        quantity = numeric_value(record.get("quantity"))
+        if not order_id or quantity is None:
+            continue
+        delivered_by_order[order_id] = delivered_by_order.get(order_id, 0.0) + quantity
+
+    overages: list[dict[str, Any]] = []
+    for order_id, delivered_quantity in sorted(delivered_by_order.items()):
+        order = crm_orders.get(order_id)
+        if order is None:
+            continue
+        ordered_quantity = numeric_value(order.get("quantity"))
+        if ordered_quantity is not None and delivered_quantity > ordered_quantity:
+            overages.append(
+                {
+                    "order_id": order_id,
+                    "ordered_quantity": ordered_quantity,
+                    "delivered_quantity": delivered_quantity,
+                }
+            )
+    return overages
+
+
+def numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def field_path_contract_check(
     sample_key: str,
     field_name: str,
@@ -944,17 +1171,29 @@ def build_summary(report: dict[str, Any], required_system_types: list[str]) -> d
     adapters = report.get("adapters") or []
     readiness = report.get("readiness") or {}
     pack_contract = report.get("pack_contract") or {}
+    business_flow_contract = report.get("business_flow_contract") or {}
     adapter_failed_count = sum(1 for item in adapters if item.get("status") != "passed")
     pack_contract_failed_count = int(pack_contract.get("failed_count") or 0)
     pack_contract_warning_count = int(pack_contract.get("warning_count") or 0)
+    business_flow_failed_count = int(business_flow_contract.get("failed_count") or 0)
+    business_flow_warning_count = int(business_flow_contract.get("warning_count") or 0)
     error_count = len(report.get("errors") or [])
     readiness_failed_count = int(readiness.get("failed_count") or 0)
-    failed_count = error_count + pack_contract_failed_count + adapter_failed_count + readiness_failed_count
+    failed_count = (
+        error_count
+        + pack_contract_failed_count
+        + business_flow_failed_count
+        + adapter_failed_count
+        + readiness_failed_count
+    )
     return {
         "required_system_types": required_system_types,
         "pack_contract_status": pack_contract.get("status"),
         "pack_contract_failed_count": pack_contract_failed_count,
         "pack_contract_warning_count": pack_contract_warning_count,
+        "business_flow_status": business_flow_contract.get("status"),
+        "business_flow_failed_count": business_flow_failed_count,
+        "business_flow_warning_count": business_flow_warning_count,
         "adapter_count": len(adapters),
         "adapter_passed_count": sum(1 for item in adapters if item.get("status") == "passed"),
         "adapter_failed_count": adapter_failed_count,
