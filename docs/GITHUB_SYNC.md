@@ -32,3 +32,9 @@ git push origin HEAD:<current-branch>
 
 Files ignored by `.gitignore`, such as local databases, logs, `storage/`,
 `tmp/`, `artifacts/`, real `.env*` files, and `node_modules/`, are not uploaded.
+
+GitHub Actions runs `.github/workflows/ci.yml` on pushes and pull requests. The
+workflow checks backend tests, frontend production build, and the release
+preflight report path used for handoff evidence. The preflight job allows the
+frontend gate to be skipped only because `frontend-build` is a required job in
+the same workflow.
