@@ -25,7 +25,7 @@ def test_enterprise_stress_787_endpoint_records_batch_benchmark_metrics() -> Non
     assert payload["metrics"]["quantity_levels"] == [1000, 3000]
 
 
-def test_enterprise_batch_1500_endpoint_runs_synthetic_feature_stress() -> None:
+def test_enterprise_batch_1500_endpoint_runs_real_batch_pipeline_stress() -> None:
     headers = auth_headers(client)
     response = client.post(
         "/api/benchmarks/run/batch-1500",
@@ -39,4 +39,15 @@ def test_enterprise_batch_1500_endpoint_runs_synthetic_feature_stress() -> None:
     assert payload["status"] == "passed"
     assert payload["file_count"] == 25
     assert payload["topk_legal_rate"] == 1
+    assert payload["job_id"]
+    assert payload["metrics"]["synthetic"] is False
+    assert payload["metrics"]["pipeline"] == "batch_artwork_to_batch_layout"
+    assert payload["metrics"]["direct_parseable_count"] == 25
+    assert payload["metrics"]["direct_parse_success_count"] == 25
+    assert payload["metrics"]["direct_parse_success_rate"] == 1
+    assert payload["metrics"]["plan_count"] == 3
+    assert payload["metrics"]["legal_plan_count"] == 3
+    assert payload["metrics"]["multi_solver_candidate_count"] >= 3
+    assert payload["metrics"]["multi_solver_legal_candidate_count"] >= 1
     assert sum(payload["metrics"]["class_counts"].values()) == 25
+    assert payload["metrics"]["status_counts"]["parsed"] == 25

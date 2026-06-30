@@ -44,8 +44,16 @@ def test_batch_layout_job_run_outputs_top3_groups_plans_and_preview() -> None:
     result = run.json()
     assert result["summary"]["group_count"] == 1
     assert result["summary"]["plan_count"] == 3
+    assert result["summary"]["multi_solver_candidate_count"] >= 3
+    assert result["summary"]["multi_solver_legal_candidate_count"] >= 1
     assert result["plans"][0]["rank"] == 1
     assert result["plans"][0]["quantity_fulfillment_rate"] == 1
+    candidate_pool = result["plans"][0]["audit_manifest"]["candidate_pool"]
+    assert candidate_pool["orchestrator"] == "MultiSolverOrchestrator"
+    assert candidate_pool["candidate_count"] == result["summary"]["multi_solver_candidate_count"]
+    assert candidate_pool["legal_candidate_count"] == result["summary"]["multi_solver_legal_candidate_count"]
+    assert "RectpackSolver" in candidate_pool["solver_names"]
+    assert result["plans"][0]["validator_report"]["veto"]["multi_solver_candidate_pool_ok"] is True
 
     groups = client.get(f"/api/batch-layout/jobs/{job['job_id']}/groups", headers=headers)
     assert groups.status_code == 200

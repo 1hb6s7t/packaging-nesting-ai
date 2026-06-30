@@ -41,15 +41,18 @@ The previous system was a usable single-job enterprise MVP: upload one parseable
 - Added tests for feature extraction/classification, grouping, cut variants, Top3 selection, batch APIs, enterprise benchmark APIs, RBAC, route auth, and migrations.
 - Added a frontend batch artwork workbench for multi-file upload, preflight, parse, feature table, grouping, Top3 plan comparison, plan preview, plan approval/export actions, oversize/manual-review visibility, and 1500-file stress entry.
 - Added production plan approval and JSON manifest export persistence, with plan-scoped confirmation phrases and workflow-layer Validator/approval checks.
+- Added `MultiSolverOrchestrator` candidate-pool execution across solver names, seeds, time limits, and rotation policies. Batch layout plan audit manifests now include candidate-pool evidence and veto plans when no legal deterministic solver candidate exists.
+- Upgraded `/api/benchmarks/run/batch-1500` from synthetic feature/classification loops to a real pipeline runner: generated SVG/DXF fixtures are persisted as batch artwork records, preflighted, parsed, grouped, planned through batch layout, and scored from real Top3/hard-rule/quantity metrics.
 
 ## Remaining Risks
 
 - Top3 plans are deterministic production-planning candidates, not final physical placement coordinates. Production coordinates still require solver and Validator integration.
-- The new batch layout path uses heuristic capacity estimates for pattern candidates. It must be deepened with real MultiSolverOrchestrator runs, multi-seed solver matrices, and exact validator certificates.
+- The batch layout path still uses heuristic capacity estimates for production pattern quantities. It now records MultiSolver candidate-pool evidence, but final Top3 physical placement coordinates still require deeper mapping from solver candidates into production patterns.
 - Batch plan export now requires production-plan approval and writes a JSON export manifest. PDF/DXF production exports for batch plans still require a later precise-placement integration.
 - PDF/JPG/PNG/AI real files are correctly classified as conversion/manual-review inputs; native geometry extraction for those formats is still out of scope until a conversion supplier or parser is integrated.
-- The 1500-file endpoint currently exercises synthetic feature/classification stress. It should be extended to run repository fixtures and real customer-like datasets in release gates.
-- True MultiSolverOrchestrator execution is still shallow: Top3 global plans are deterministic capacity/pattern candidates, not a full multi-solver, multi-seed coordinate candidate pool.
+- External OR-Tools is still a protected unsupported adapter, and PackingSolver/Sparrow require real configured CLI binaries before they can contribute legal production candidates.
+- Solver attempt evidence is currently attached to candidate solution audit manifests and batch plan manifests; workflow-level persistence as one `SolverRun`/log per attempt remains to be completed for full replay.
+- The 1500-file endpoint now runs a real generated SVG/DXF batch pipeline. It should still be extended to run repository fixtures, real customer-like datasets, OR-Datasets closed-loop cases, and slow-release 1500-file gates outside the normal unit-test path.
 
 ## Verification
 
@@ -57,4 +60,5 @@ The previous system was a usable single-job enterprise MVP: upload one parseable
 - `pytest -q tests/backend`
 - `npm.cmd run build` from `frontend/`
 - `python scripts/benchmark_release_gate.py --output tmp/benchmark-release-gate-after-plan-approval.json`
-- Result: 457 passed, 2 skipped; frontend build passed; benchmark gate passed with P95 29 ms.
+- Result before this continuation slice: 457 passed, 2 skipped; frontend build passed; benchmark gate passed with P95 29 ms.
+- Continuation slice targeted checks: `python -m ruff check backend\app\services\solvers\multi_orchestrator.py backend\app\services\batch_layout.py backend\app\services\enterprise_benchmarks.py backend\app\api\routes\benchmarks.py tests\backend\test_multi_solver_orchestrator.py tests\backend\test_batch_layout_api.py tests\backend\test_enterprise_benchmarks_api.py`; `pytest -q tests/backend/test_multi_solver_orchestrator.py tests/backend/test_batch_layout_api.py tests/backend/test_enterprise_benchmarks_api.py`.

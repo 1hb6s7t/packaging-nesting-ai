@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.db import models as dbm
 from app.domain import schemas
+from app.services import repository
 from app.services.batch_artworks import list_batch_items
+from app.services.geometry import rectangle_asset
+from app.services.solvers.multi_orchestrator import MultiSolverOrchestrator
 
 
 class CompatibilityGroupingService:
@@ -194,6 +197,7 @@ class TopKGlobalPlanSelector:
         job_id: str,
         candidates: list[CandidatePattern],
         top_k: int,
+        candidate_pool_evidence: dict[str, Any] | None = None,
     ) -> list[tuple[schemas.ProductionPlanRead, list[schemas.ProductionPatternRead]]]:
         if not candidates:
             return []
@@ -206,7 +210,19 @@ class TopKGlobalPlanSelector:
             signature = "|".join(sorted(pattern.pattern_id for pattern in patterns))
             diversity = 1.0 if signature not in used_signatures else 0.5
             used_signatures.add(signature)
-            selected.append((self._plan(job_id, len(selected) + 1, intent, patterns, diversity), patterns))
+            selected.append(
+                (
+                    self._plan(
+                        job_id,
+                        len(selected) + 1,
+                        intent,
+                        patterns,
+                        diversity,
+                        candidate_pool_evidence=candidate_pool_evidence,
+                    ),
+                    patterns,
+                )
+            )
             if len(selected) >= top_k:
                 break
         while len(selected) < top_k and selected:
@@ -261,8 +277,10 @@ class TopKGlobalPlanSelector:
         intent: schemas.ProductionPlanIntent,
         patterns: list[schemas.ProductionPatternRead],
         diversity_score: float,
+        candidate_pool_evidence: dict[str, Any] | None = None,
     ) -> schemas.ProductionPlanRead:
-        hard_rule_pass = all(pattern.hard_rule_pass for pattern in patterns)
+        candidate_pool_ok = _candidate_pool_ok(candidate_pool_evidence)
+        hard_rule_pass = all(pattern.hard_rule_pass for pattern in patterns) and candidate_pool_ok
         quantity_rate = min((pattern.quantity_fulfillment_rate for pattern in patterns), default=0)
         utilization = sum(pattern.utilization_rate for pattern in patterns) / len(patterns)
         total_sheets = sum(pattern.required_sheets for pattern in patterns)
@@ -293,6 +311,7 @@ class TopKGlobalPlanSelector:
                     "rotation_ok": hard_rule_pass,
                     "material_rule_ok": True,
                     "export_ok": hard_rule_pass,
+                    "multi_solver_candidate_pool_ok": candidate_pool_ok,
                     "quantity_fulfillment_rate": quantity_rate,
                 },
             },
@@ -302,6 +321,7 @@ class TopKGlobalPlanSelector:
                 "deterministic": True,
                 "coordinates_source": "not_generated_by_ai",
                 "pattern_ids": [pattern.pattern_id for pattern in patterns],
+                "candidate_pool": candidate_pool_evidence or {},
             },
             patterns=patterns,
         )
@@ -315,11 +335,13 @@ class BatchLayoutService:
         cut_variants: SheetCutVariantGenerator | None = None,
         candidate_generator: CandidateJobGenerator | None = None,
         topk_selector: TopKGlobalPlanSelector | None = None,
+        multi_solver: MultiSolverOrchestrator | None = None,
     ) -> None:
         self.grouping = grouping or CompatibilityGroupingService()
         self.cut_variants = cut_variants or SheetCutVariantGenerator()
         self.candidate_generator = candidate_generator or CandidateJobGenerator()
         self.topk_selector = topk_selector or TopKGlobalPlanSelector()
+        self.multi_solver = multi_solver or MultiSolverOrchestrator()
 
     def create_job(self, db: Session, payload: schemas.BatchLayoutJobCreate) -> schemas.BatchLayoutJobRead:
         batch = db.get(dbm.BatchUpload, payload.batch_id)
@@ -379,7 +401,13 @@ class BatchLayoutService:
             )
             for candidate in candidates
         ]
-        selected = self.topk_selector.select(job_id=job_id, candidates=candidates, top_k=row.top_k)
+        candidate_pool_evidence = self._build_solver_candidate_evidence(db, row, items, variants)
+        selected = self.topk_selector.select(
+            job_id=job_id,
+            candidates=candidates,
+            top_k=row.top_k,
+            candidate_pool_evidence=candidate_pool_evidence,
+        )
         plan_reads = [self._create_plan(db, plan, patterns) for plan, patterns in selected]
         row.status = "completed" if plan_reads else "failed"
         db.commit()
@@ -393,6 +421,8 @@ class BatchLayoutService:
                 "candidate_pattern_count": len(candidates),
                 "plan_count": len(plan_reads),
                 "hard_rule_plan_count": sum(1 for plan in plan_reads if plan.hard_rule_pass),
+                "multi_solver_candidate_count": candidate_pool_evidence.get("candidate_count", 0),
+                "multi_solver_legal_candidate_count": candidate_pool_evidence.get("legal_candidate_count", 0),
             },
         )
 
@@ -657,6 +687,114 @@ class BatchLayoutService:
         db.execute(delete(dbm.BatchLayoutGroup).where(dbm.BatchLayoutGroup.job_id == job_id))
         db.commit()
 
+    def _build_solver_candidate_evidence(
+        self,
+        db: Session,
+        job: dbm.BatchLayoutJob,
+        items: list[schemas.BatchArtworkItemRead],
+        variants: list[schemas.SheetCutVariant],
+    ) -> dict[str, Any]:
+        params = job.params_json or {}
+        if params.get("multi_solver_evidence_enabled", True) is False:
+            return {
+                "orchestrator": "MultiSolverOrchestrator",
+                "candidate_count": 0,
+                "legal_candidate_count": 0,
+                "skipped_reason": "disabled_by_job_params",
+            }
+        parent = db.get(dbm.SheetParentSpec, job.sheet_parent_spec_id)
+        if parent is None or not variants:
+            return {
+                "orchestrator": "MultiSolverOrchestrator",
+                "candidate_count": 0,
+                "legal_candidate_count": 0,
+                "skipped_reason": "missing_sheet_context",
+            }
+        limit = int(params.get("solver_evidence_item_limit", 12))
+        solver_items = self._solver_items_for_evidence(db, items, limit=max(1, limit))
+        if not solver_items:
+            return {
+                "orchestrator": "MultiSolverOrchestrator",
+                "candidate_count": 0,
+                "legal_candidate_count": 0,
+                "skipped_reason": "no_parseable_geometry",
+            }
+        variant = next((candidate for candidate in variants if candidate.kind == "parent"), variants[0])
+        solver_job = schemas.NestingJob(
+            job_id=f"{job.id}_candidate_pool",
+            sheet=schemas.SheetSpec(
+                sheet_id=variant.variant_id,
+                name=variant.code,
+                width=variant.width,
+                height=variant.height,
+                margin_top=10,
+                margin_right=10,
+                margin_bottom=10,
+                margin_left=10,
+                gripper_mm=20,
+                material=parent.material,
+                thickness=parent.thickness,
+            ),
+            candidate_items=solver_items,
+            top_k=3,
+            solver_config=schemas.SolverConfig(time_limit_sec=int(params.get("solver_evidence_time_limit_sec", 1))),
+        )
+        solutions = self.multi_solver.solve_candidate_pool(
+            solver_job,
+            seeds=[int(seed) for seed in params.get("solver_evidence_seeds", [0, 17])],
+            time_limits_sec=[int(params.get("solver_evidence_time_limit_sec", 1))],
+            rotation_policies=params.get("solver_evidence_rotation_policies", ["as_declared", "prefer_90", "zero_only"]),
+        )
+        report = self.multi_solver.candidate_pool_report(solutions)
+        report.update(
+            {
+                "job_id": solver_job.job_id,
+                "item_count": len(solver_items),
+                "sheet_variant_id": variant.variant_id,
+                "source": "batch_layout_run",
+            }
+        )
+        return report
+
+    def _solver_items_for_evidence(
+        self,
+        db: Session,
+        items: list[schemas.BatchArtworkItemRead],
+        *,
+        limit: int,
+    ) -> list[schemas.NestingItem]:
+        solver_items: list[schemas.NestingItem] = []
+        for item in items:
+            if item.classification == "OVERSIZE" or item.feature is None:
+                continue
+            polygons = repository.get_polygons(db, item.artwork_id or "") if item.artwork_id else []
+            polygon = polygons[0] if polygons else None
+            if polygon is None and item.feature.bbox is not None:
+                bbox = item.feature.bbox
+                polygon = rectangle_asset(
+                    f"{item.item_id}_feature_bbox",
+                    bbox.width,
+                    bbox.height,
+                    {"source": "feature_bbox_fallback"},
+                )
+            if polygon is None:
+                continue
+            solver_items.append(
+                schemas.NestingItem(
+                    item_id=item.item_id,
+                    order_id=item.order_id or item.item_id,
+                    polygon=polygon,
+                    quantity=1,
+                    priority_score=float((item.metadata or {}).get("priority_score", 0)),
+                    allowed_rotations=list((item.metadata or {}).get("allowed_rotations", [0, 90, 180, 270])),
+                    min_gap_mm=float((item.metadata or {}).get("min_gap_mm", 2)),
+                    bleed_mm=float((item.metadata or {}).get("bleed_mm", 1)),
+                )
+            )
+            if len(solver_items) >= limit:
+                break
+        return solver_items
+
 
 def sheet_parent_from_row(row: dbm.SheetParentSpec) -> schemas.SheetParentSpec:
     return schemas.SheetParentSpec(
@@ -723,6 +861,12 @@ def _risk_for_candidate(candidate: CandidatePattern) -> float:
     if candidate.variant.kind in {"third", "quarter", "custom"}:
         penalty += 0.1
     return penalty
+
+
+def _candidate_pool_ok(evidence: dict[str, Any] | None) -> bool:
+    if evidence is None:
+        return True
+    return int(evidence.get("candidate_count", 0)) >= 3 and int(evidence.get("legal_candidate_count", 0)) >= 1
 
 
 def _stable_id(prefix: str, *parts: str) -> str:

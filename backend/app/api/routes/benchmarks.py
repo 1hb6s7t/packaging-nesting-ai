@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 import statistics
 import time
@@ -9,7 +8,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db import models as dbm
 from app.db.session import get_db
 from app.domain.schemas import (
     BatchBenchmarkRunRead,
@@ -21,14 +19,16 @@ from app.domain.schemas import (
     SheetSpec,
 )
 from app.services import repository
-from app.services.artworks import preflight_artwork
-from app.services.batch_artworks import ArtworkClassifier, ArtworkFeatureExtractor
 from app.services.batch_planning import plan_batch
 from app.services.benchmark_importers import load_public_dataset_as_benchmark_case
-from app.services.geometry import rectangle_asset
+from app.services.enterprise_benchmarks import (
+    EnterpriseBenchmarkRunner,
+    create_batch_benchmark_run,
+)
 from app.services.security import require_permission
 
 router = APIRouter()
+enterprise_runner = EnterpriseBenchmarkRunner()
 
 
 @router.post("/import/or-datasets", response_model=BenchmarkCaseRead)
@@ -89,7 +89,7 @@ def run_stress_787(
             for result in results
         ],
     }
-    run = _create_batch_benchmark_run(
+    run = create_batch_benchmark_run(
         db,
         benchmark_type="stress_787",
         status="passed" if all(result.hard_rule_pass for result in results) else "failed",
@@ -107,7 +107,7 @@ def run_stress_787(
         target_type="batch_benchmark_run",
         target_id=run.run_id,
         actor_id=current_user.user_id,
-        payload=metrics,
+        payload=run.metrics,
     )
     return run
 
@@ -121,94 +121,25 @@ def run_batch_1500_stress(
     file_count = int((payload or {}).get("file_count", 1500))
     if file_count < 1:
         raise HTTPException(status_code=422, detail="file_count must be >= 1")
-    extractor = ArtworkFeatureExtractor()
-    classifier = ArtworkClassifier()
-    started = time.perf_counter()
-    class_counts: dict[str, int] = {}
-    for index in range(file_count):
-        width = 60 + index % 9
-        height = 40 + index % 7
-        polygon = rectangle_asset(f"stress_shape_{index:04d}", width, height)
-        report = preflight_artwork(f"stress_{index:04d}.svg", "<svg/>", "image/svg+xml")
-        feature = extractor.extract([polygon], preflight_report=report)
-        classification = classifier.classify(feature, source_format="svg")
-        class_counts[classification] = class_counts.get(classification, 0) + 1
-    runtime_ms = int((time.perf_counter() - started) * 1000)
-    metrics = {
-        "file_count": file_count,
-        "class_counts": class_counts,
-        "runtime_ms": runtime_ms,
-        "generated_at": datetime.now(UTC).isoformat(),
-    }
-    run = _create_batch_benchmark_run(
-        db,
-        benchmark_type="batch_1500",
-        status="passed",
-        file_count=file_count,
-        p95_runtime_ms=runtime_ms,
-        hard_rule_pass_rate=1.0,
-        quantity_fulfillment_rate=1.0,
-        topk_legal_rate=1.0,
-        avg_case_score=100.0,
-        metrics=metrics,
-    )
+    try:
+        run = enterprise_runner.run_batch_pipeline(
+            db,
+            file_count=file_count,
+            include_pdf_fallback=bool((payload or {}).get("include_pdf_fallback", False)),
+            moq_per_item=int((payload or {}).get("moq_per_item", 1000)),
+            top_k=int((payload or {}).get("top_k", 3)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     repository.log_operation(
         db,
         action="benchmark.batch_1500.run",
         target_type="batch_benchmark_run",
         target_id=run.run_id,
         actor_id=current_user.user_id,
-        payload=metrics,
+        payload=run.metrics,
     )
     return run
-
-
-def _create_batch_benchmark_run(
-    db: Session,
-    *,
-    benchmark_type: str,
-    status: str,
-    file_count: int,
-    p95_runtime_ms: int | None,
-    hard_rule_pass_rate: float,
-    quantity_fulfillment_rate: float,
-    topk_legal_rate: float,
-    avg_case_score: float,
-    metrics: dict[str, Any],
-) -> BatchBenchmarkRunRead:
-    row = dbm.BatchBenchmarkRun(
-        benchmark_type=benchmark_type,
-        status=status,
-        file_count=file_count,
-        p95_runtime_ms=p95_runtime_ms,
-        hard_rule_pass_rate=hard_rule_pass_rate,
-        quantity_fulfillment_rate=quantity_fulfillment_rate,
-        topk_legal_rate=topk_legal_rate,
-        avg_case_score=round(avg_case_score, 4),
-        metrics_json=metrics,
-    )
-    db.add(row)
-    db.commit()
-    return _batch_benchmark_run_from_row(row)
-
-
-def _batch_benchmark_run_from_row(row: dbm.BatchBenchmarkRun) -> BatchBenchmarkRunRead:
-    return BatchBenchmarkRunRead(
-        run_id=row.id,
-        job_id=row.job_id,
-        benchmark_type=row.benchmark_type,
-        status=row.status,
-        file_count=row.file_count,
-        p95_runtime_ms=row.p95_runtime_ms,
-        peak_rss_mb=row.peak_rss_mb,
-        hard_rule_pass_rate=row.hard_rule_pass_rate,
-        quantity_fulfillment_rate=row.quantity_fulfillment_rate,
-        topk_legal_rate=row.topk_legal_rate,
-        avg_case_score=row.avg_case_score,
-        metrics=row.metrics_json or {},
-        created_at=row.created_at.isoformat(),
-        updated_at=row.updated_at.isoformat(),
-    )
 
 
 def _stress_job(quantity: int) -> NestingJob:
