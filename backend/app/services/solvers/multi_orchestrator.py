@@ -166,6 +166,14 @@ class MultiSolverOrchestrator:
 
     def _solution_audit(self, spec: SolverRunSpec, solution: NestingSolution) -> dict[str, str]:
         report = solution.validation_report
+        certificate = {
+            "candidate_id": spec.candidate_id,
+            "solution_id": solution.solution_id,
+            "solver_name": spec.solver_name.value,
+            "placed_items": [placement.model_dump(mode="json") for placement in solution.placed_items],
+            "unplaced_items": [unplaced.model_dump(mode="json") for unplaced in solution.unplaced_items],
+            "validation_report": report.model_dump(mode="json") if report else None,
+        }
         manifest = {
             "candidate_id": spec.candidate_id,
             "solver_name": spec.solver_name.value,
@@ -178,6 +186,9 @@ class MultiSolverOrchestrator:
             "validator_issue_codes": [issue.code for issue in report.issues] if report else [],
             "runtime_ms": solution.runtime_ms,
             "score_total": solution.score.total if solution.score else 0,
+            "stdout_present": bool(solution.exports.get("stdout")),
+            "stderr_present": bool(solution.exports.get("stderr")),
+            "certificate_present": True,
         }
         return {
             "candidate_id": spec.candidate_id,
@@ -187,6 +198,9 @@ class MultiSolverOrchestrator:
             "time_limit_sec": str(spec.time_limit_sec),
             "rotation_policy": spec.rotation_policy,
             "audit_manifest_json": json.dumps(manifest, sort_keys=True),
+            "certificate_json": json.dumps(certificate, sort_keys=True),
+            "stdout": solution.exports.get("stdout", ""),
+            "stderr": solution.exports.get("stderr", ""),
         }
 
 

@@ -2565,11 +2565,12 @@ def save_solutions(
         db.execute(delete(dbm.SolutionPlacement).where(dbm.SolutionPlacement.solution_id.in_(existing_ids)))
     db.execute(delete(dbm.NestingSolution).where(dbm.NestingSolution.nesting_job_id == job_id))
     for solution in solutions:
+        solution_solver_run_id = solution.exports.get("solver_run_id") or solver_run_id
         db.add(
             dbm.NestingSolution(
                 id=solution.solution_id,
                 nesting_job_id=solution.job_id,
-                solver_run_id=solver_run_id,
+                solver_run_id=solution_solver_run_id,
                 status=solution.status,
                 rank=solution.rank,
                 utilization_rate=solution.utilization_rate,

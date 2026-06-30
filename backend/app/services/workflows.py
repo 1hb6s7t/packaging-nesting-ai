@@ -22,12 +22,13 @@ from app.services import repository
 from app.services.benchmarks import run_and_record_benchmark
 from app.services.batch_layout import BatchLayoutService
 from app.services.exports import create_solution_export
-from app.services.solvers import SolverOrchestrator
+from app.services.solvers import MultiSolverOrchestrator, SolverOrchestrator
 from app.services.storage import write_text
 from app.services.store import store
 
 
 orchestrator = SolverOrchestrator()
+multi_solver_orchestrator = MultiSolverOrchestrator(orchestrator)
 batch_layout_service = BatchLayoutService()
 
 
@@ -45,6 +46,8 @@ def run_nesting_job(
     job = repository.get_job(db, job_id) or store.jobs.get(job_id)
     if not job:
         raise ValueError("job not found")
+    if _candidate_pool_enabled(job.solver_config.options):
+        return _run_nesting_job_candidate_pool(db, job, actor_id=actor_id, task_id=task_id)
     adapter = orchestrator.adapters.get(job.solver_config.solver_name)
     solver_name = job.solver_config.solver_name.value
     repository.ensure_solver_enabled(db, solver_name)
@@ -96,6 +99,207 @@ def run_nesting_job(
         payload={"solver_run_id": run_id, "solution_ids": ids},
     )
     return SolutionList(job_id=job_id, solutions=solutions)
+
+
+def _run_nesting_job_candidate_pool(
+    db: Session,
+    job,
+    *,
+    actor_id: str | None = None,
+    task_id: str | None = None,
+) -> SolutionList:
+    job_id = job.job_id
+    repository.ensure_solver_enabled(db, job.solver_config.solver_name.value)
+    options = job.solver_config.options
+    started_at = time.perf_counter()
+    all_solutions: list[NestingSolution] = []
+    try:
+        _raise_if_cancelled(db, task_id)
+        all_solutions = multi_solver_orchestrator.solve_candidate_pool(
+            job,
+            solver_names=_solver_names_from_options(options),
+            seeds=_int_or_none_list(options.get("candidate_pool_seeds")),
+            time_limits_sec=_int_list(options.get("candidate_pool_time_limits_sec")),
+            rotation_policies=_str_list(options.get("candidate_pool_rotation_policies")),
+            max_runs=_optional_int(options.get("candidate_pool_max_runs")),
+        )
+        _raise_if_cancelled(db, task_id)
+    except Exception as exc:
+        repository.log_operation(
+            db,
+            action="nesting_job.run_failed",
+            target_type="nesting_job",
+            target_id=job_id,
+            actor_id=actor_id,
+            payload={"candidate_pool_enabled": True, "error": str(exc)},
+        )
+        raise
+
+    for solution in all_solutions:
+        _persist_solver_attempt_run(db, job, solution)
+
+    solutions = all_solutions[: job.top_k]
+    ids: list[str] = []
+    for solution in solutions:
+        store.solutions[solution.solution_id] = solution
+        ids.append(solution.solution_id)
+    store.job_solutions[job_id] = ids
+    repository.save_solutions(db, job_id, solutions)
+    runtime_ms = int((time.perf_counter() - started_at) * 1000)
+    pool_report = multi_solver_orchestrator.candidate_pool_report(all_solutions)
+    repository.log_operation(
+        db,
+        action="nesting_job.run",
+        target_type="nesting_job",
+        target_id=job_id,
+        actor_id=actor_id,
+        payload={
+            "candidate_pool_enabled": True,
+            "attempt_count": len(all_solutions),
+            "solution_ids": ids,
+            "runtime_ms": runtime_ms,
+            "candidate_pool": pool_report,
+        },
+    )
+    return SolutionList(job_id=job_id, solutions=solutions)
+
+
+def _persist_solver_attempt_run(db: Session, job, solution: NestingSolution) -> str:
+    manifest = _json_dict(solution.exports.get("audit_manifest_json"))
+    solver_name = str(manifest.get("solver_name") or solution.solver)
+    solver_version = str(manifest.get("solver_version") or solution.exports.get("solver_version") or "unknown")
+    attempt_config = {
+        "candidate_id": solution.exports.get("candidate_id") or solution.solution_id,
+        "solver_name": solver_name,
+        "solver_version": solver_version,
+        "seed": manifest.get("seed"),
+        "time_limit_sec": manifest.get("time_limit_sec"),
+        "rotation_policy": manifest.get("rotation_policy"),
+        "candidate_pool_enabled": True,
+        "base_solver_config": job.solver_config.model_dump(mode="json"),
+    }
+    input_snapshot = job.model_dump(mode="json")
+    input_payload = json.dumps(input_snapshot, sort_keys=True, ensure_ascii=False)
+    evidence = {
+        "solution_id": solution.solution_id,
+        "candidate_id": attempt_config["candidate_id"],
+        "rank": solution.rank,
+        "status": solution.status,
+        "input_hash": hashlib.sha256(input_payload.encode("utf-8")).hexdigest(),
+        "input_snapshot": input_snapshot,
+        "attempt_config": attempt_config,
+        "stdout": solution.exports.get("stdout", ""),
+        "stderr": solution.exports.get("stderr", ""),
+        "certificate": _json_dict(solution.exports.get("certificate_json")),
+        "validator_report": solution.validation_report.model_dump(mode="json") if solution.validation_report else None,
+        "score": solution.score.model_dump(mode="json") if solution.score else None,
+        "audit_manifest": manifest,
+    }
+    run_id = repository.create_solver_run(
+        db,
+        job_id=job.job_id,
+        solver_name=solver_name,
+        solver_version=solver_version,
+        config={
+            "seed": _optional_int(attempt_config["seed"]),
+            "candidate_pool_attempt": attempt_config,
+            "input_hash": evidence["input_hash"],
+        },
+    )
+    repository.add_solver_run_log(db, run_id, "info", "solver attempt evidence", evidence)
+    if solution.status == "failed":
+        repository.fail_solver_run(db, run_id, _failure_reason(solution), evidence)
+    else:
+        repository.complete_solver_run(db, run_id, solution.runtime_ms, evidence)
+    solution.exports["solver_run_id"] = run_id
+    return run_id
+
+
+def _candidate_pool_enabled(options: dict[str, Any]) -> bool:
+    value = options.get("candidate_pool_enabled", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _solver_names_from_options(options: dict[str, Any]) -> list[SolverName] | None:
+    value = options.get("candidate_pool_solvers")
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    names: list[SolverName] = []
+    for item in value:
+        try:
+            names.append(SolverName(str(item)))
+        except ValueError:
+            continue
+    return names or None
+
+
+def _int_or_none_list(value: Any) -> list[int | None] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    result: list[int | None] = []
+    for item in value:
+        if item is None or item == "":
+            result.append(None)
+            continue
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return result or None
+
+
+def _int_list(value: Any) -> list[int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    result: list[int] = []
+    for item in value:
+        try:
+            result.append(max(1, int(item)))
+        except (TypeError, ValueError):
+            continue
+    return result or None
+
+
+def _str_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    result = [str(item) for item in value if str(item).strip()]
+    return result or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_dict(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _failure_reason(solution: NestingSolution) -> str:
+    if solution.unplaced_items:
+        return solution.unplaced_items[0].reason
+    return f"solver attempt failed: {solution.status}"
 
 
 def export_solution(

@@ -133,6 +133,22 @@ def test_verify_release_preflight_rejects_failed_benchmark_gate(tmp_path: Path) 
     assert "benchmark release gate summary has errors" in report["errors"]
 
 
+def test_verify_release_preflight_rejects_missing_benchmark_coverage(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    for gate in payload["gates"]:
+        if gate["name"] == "benchmark release gate":
+            gate["payload"].pop("coverage")
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "benchmark release gate coverage is missing" in report["errors"]
+    assert "benchmark release gate must include OR-Datasets coverage" in report["errors"]
+
+
 def test_verify_release_preflight_requires_dependency_review_artifact_when_option_is_set(tmp_path: Path) -> None:
     module = load_verify_release_preflight_module()
     payload = valid_preflight_report()
@@ -762,6 +778,14 @@ def benchmark_gate_payload(*, error_count: int = 0) -> dict:
             "max_peak_rss_mb": None,
         },
         "case_count": 6,
+        "coverage": {
+            "or_dataset": True,
+            "sheet_787x1092": True,
+            "moq_1000": True,
+            "quantity_levels": [1000, 3000, 5000, 10000, 15000],
+            "planning_modes": ["expanded", "pattern"],
+            "case_sources": ["or_dataset", "release_quantity_ladder"],
+        },
         "summary": {
             "case_count": 6,
             "passed_case_count": 6,

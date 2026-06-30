@@ -223,6 +223,16 @@ def validate_benchmark_gate(
         errors.append("benchmark release gate has failed cases")
     if summary.get("error_count") not in {0, None}:
         errors.append("benchmark release gate summary has errors")
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict):
+        errors.append("benchmark release gate coverage is missing")
+        coverage = {}
+    if coverage.get("or_dataset") is not True:
+        errors.append("benchmark release gate must include OR-Datasets coverage")
+    if coverage.get("sheet_787x1092") is not True:
+        errors.append("benchmark release gate must include 787x1092 coverage")
+    if coverage.get("moq_1000") is not True:
+        errors.append("benchmark release gate must include MOQ 1000 coverage")
     modes = set(summary.get("planning_modes") or [])
     if not {"pattern", "expanded"}.issubset(modes):
         errors.append("benchmark release gate must cover pattern and expanded planning modes")

@@ -19,6 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.domain.schemas import NestingItem, NestingJob, PlanningMode, PolygonAsset, SheetSpec  # noqa: E402
 from app.services.batch_planning import plan_batch  # noqa: E402
 from app.services.benchmarks import _current_rss_mb  # noqa: E402
+from app.services.benchmark_importers import benchmark_case_from_mapping  # noqa: E402
 
 
 DEFAULT_QUANTITY_LEVELS = [1000, 3000, 5000, 10000, 15000]
@@ -94,8 +95,12 @@ def run_benchmark_gate(
         cases.append(
             {
                 "case_id": case_id,
+                "source": "release_quantity_ladder",
                 "planning_mode": planning_mode,
                 "sheet": "787x1092",
+                "sheet_width": job.sheet.width,
+                "sheet_height": job.sheet.height,
+                "min_item_quantity": quantity,
                 "requested_units": result.requested_units,
                 "produced_units": result.produced_units,
                 "shortage_units": result.shortage_units,
@@ -112,15 +117,53 @@ def run_benchmark_gate(
                 "failure_reason": result.failure_reason,
             }
         )
+    or_case = build_or_dataset_release_case()
+    or_job = NestingJob(
+        job_id=or_case.case_id,
+        sheet=or_case.sheet,
+        candidate_items=or_case.items,
+        constraints={"source": "or_dataset", "max_batch_candidates_per_sheet": 600},
+        top_k=1,
+    )
+    or_result = plan_batch(or_job, or_case.planning_mode)
+    rss_values.append(_current_rss_mb())
+    runtimes.append(or_result.runtime_ms)
+    cases.append(
+        {
+            "case_id": or_case.case_id,
+            "source": "or_dataset",
+            "planning_mode": or_case.planning_mode,
+            "sheet": "787x1092",
+            "sheet_width": or_case.sheet.width,
+            "sheet_height": or_case.sheet.height,
+            "min_item_quantity": min(item.quantity for item in or_case.items),
+            "requested_units": or_result.requested_units,
+            "produced_units": or_result.produced_units,
+            "shortage_units": or_result.shortage_units,
+            "overproduction_units": or_result.overproduction_units,
+            "quantity_fulfillment_rate": or_result.quantity_fulfillment_rate,
+            "units_per_sheet": or_result.units_per_sheet,
+            "sheets_used": or_result.sheets_used,
+            "utilization_rate": or_result.utilization_rate,
+            "waste_rate": or_result.waste_rate,
+            "runtime_ms": or_result.runtime_ms,
+            "hard_rule_pass": or_result.hard_rule_pass,
+            "export_ok": or_result.export_ok,
+            "case_score": or_result.case_score,
+            "failure_reason": or_result.failure_reason,
+        }
+    )
 
     p95_runtime_ms = _p95_int(runtimes)
     peak_rss_mb = _peak_rss(rss_values)
+    coverage = build_coverage(cases, quantity_levels or DEFAULT_QUANTITY_LEVELS)
     errors = validate_gate_results(
         cases,
         p95_runtime_ms=p95_runtime_ms,
         peak_rss_mb=peak_rss_mb,
         thresholds=thresholds,
     )
+    errors.extend(validate_coverage(coverage))
     status = "passed" if not errors else "failed"
     return {
         "schema_version": 1,
@@ -140,9 +183,51 @@ def run_benchmark_gate(
             "peak_rss_mb": peak_rss_mb,
             "error_count": len(errors),
         },
+        "coverage": coverage,
         "errors": errors,
         "cases": cases,
     }
+
+
+def build_or_dataset_release_case():
+    return benchmark_case_from_mapping(
+        {
+            "bin_width": 787,
+            "bin_height": 1092,
+            "rectangles": [
+                {"id": "or_box_a", "width": 80, "height": 60, "demand": 1000},
+            ],
+        },
+        case_id="or_dataset_787x1092_qty_1000",
+        name="OR dataset 787x1092 quantity 1000",
+        sheet_width=None,
+        sheet_height=None,
+        material="white_card",
+        thickness="350gsm",
+        planning_mode="pattern",
+    )
+
+
+def build_coverage(cases: list[dict[str, Any]], quantity_levels: list[int]) -> dict[str, Any]:
+    return {
+        "or_dataset": any(case.get("source") == "or_dataset" for case in cases),
+        "sheet_787x1092": any(case.get("sheet_width") == 787 and case.get("sheet_height") == 1092 for case in cases),
+        "moq_1000": any(case.get("min_item_quantity", 0) >= 1000 for case in cases),
+        "quantity_levels": quantity_levels,
+        "planning_modes": sorted({case["planning_mode"] for case in cases}),
+        "case_sources": sorted({case.get("source", "unknown") for case in cases}),
+    }
+
+
+def validate_coverage(coverage: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if coverage.get("or_dataset") is not True:
+        errors.append("benchmark release gate must include an OR-Datasets converted case")
+    if coverage.get("sheet_787x1092") is not True:
+        errors.append("benchmark release gate must cover 787x1092 sheet")
+    if coverage.get("moq_1000") is not True:
+        errors.append("benchmark release gate must cover MOQ 1000")
+    return errors
 
 
 def validate_gate_results(

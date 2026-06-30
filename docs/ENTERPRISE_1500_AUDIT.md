@@ -43,6 +43,8 @@ The previous system was a usable single-job enterprise MVP: upload one parseable
 - Added production plan approval and JSON manifest export persistence, with plan-scoped confirmation phrases and workflow-layer Validator/approval checks.
 - Added `MultiSolverOrchestrator` candidate-pool execution across solver names, seeds, time limits, and rotation policies. Batch layout plan audit manifests now include candidate-pool evidence and veto plans when no legal deterministic solver candidate exists.
 - Upgraded `/api/benchmarks/run/batch-1500` from synthetic feature/classification loops to a real pipeline runner: generated SVG/DXF fixtures are persisted as batch artwork records, preflighted, parsed, grouped, planned through batch layout, and scored from real Top3/hard-rule/quantity metrics.
+- Added opt-in MultiSolver candidate-pool execution for nesting jobs through `solver_config.options.candidate_pool_enabled`; each candidate attempt now writes an individual `solver_run` plus replay evidence in `solver_run_log.payload`, including input snapshot/hash, seed, solver version, rotation policy, stdout/stderr fields, certificate JSON, score, and Validator report.
+- Added `/api/benchmarks/run/or-dataset` and benchmark release-gate coverage checks for OR-Datasets, 787x1092 sheets, and MOQ 1000. The offline preflight verifier now rejects benchmark reports missing those coverage fields.
 
 ## Remaining Risks
 
@@ -51,8 +53,9 @@ The previous system was a usable single-job enterprise MVP: upload one parseable
 - Batch plan export now requires production-plan approval and writes a JSON export manifest. PDF/DXF production exports for batch plans still require a later precise-placement integration.
 - PDF/JPG/PNG/AI real files are correctly classified as conversion/manual-review inputs; native geometry extraction for those formats is still out of scope until a conversion supplier or parser is integrated.
 - External OR-Tools is still a protected unsupported adapter, and PackingSolver/Sparrow require real configured CLI binaries before they can contribute legal production candidates.
-- Solver attempt evidence is currently attached to candidate solution audit manifests and batch plan manifests; workflow-level persistence as one `SolverRun`/log per attempt remains to be completed for full replay.
+- Solver attempt evidence is persisted in `solver_run_log.payload` for opt-in candidate-pool runs. A future migration should promote high-value attempt fields such as `candidate_id`, `input_sha256`, certificate storage key, stdout/stderr object keys, and validator report into first-class indexed columns/artifacts.
 - The 1500-file endpoint now runs a real generated SVG/DXF batch pipeline. It should still be extended to run repository fixtures, real customer-like datasets, OR-Datasets closed-loop cases, and slow-release 1500-file gates outside the normal unit-test path.
+- OR-Datasets coverage is now in the release benchmark gate. Full multi-item OR pattern fulfillment remains limited by the current pattern planner; the release gate uses a single MOQ1000 OR rectangle case until mixed-pattern quantity planning is deepened.
 
 ## Verification
 
@@ -62,3 +65,4 @@ The previous system was a usable single-job enterprise MVP: upload one parseable
 - `python scripts/benchmark_release_gate.py --output tmp/benchmark-release-gate-after-plan-approval.json`
 - Result before this continuation slice: 457 passed, 2 skipped; frontend build passed; benchmark gate passed with P95 29 ms.
 - Continuation slice targeted checks: `python -m ruff check backend\app\services\solvers\multi_orchestrator.py backend\app\services\batch_layout.py backend\app\services\enterprise_benchmarks.py backend\app\api\routes\benchmarks.py tests\backend\test_multi_solver_orchestrator.py tests\backend\test_batch_layout_api.py tests\backend\test_enterprise_benchmarks_api.py`; `pytest -q tests/backend/test_multi_solver_orchestrator.py tests/backend/test_batch_layout_api.py tests/backend/test_enterprise_benchmarks_api.py`.
+- Attempt persistence and OR coverage continuation checks: `pytest -q tests/backend/test_audit_and_runs.py tests/backend/test_multi_solver_orchestrator.py tests/backend/test_enterprise_benchmarks_api.py tests/backend/test_benchmark_release_gate.py tests/backend/test_verify_release_preflight.py`; `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-or-coverage.json`.

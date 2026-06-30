@@ -888,6 +888,14 @@ def benchmark_gate_payload() -> dict:
             "max_peak_rss_mb": None,
         },
         "case_count": 6,
+        "coverage": {
+            "or_dataset": True,
+            "sheet_787x1092": True,
+            "moq_1000": True,
+            "quantity_levels": [1000, 3000, 5000, 10000, 15000],
+            "planning_modes": ["expanded", "pattern"],
+            "case_sources": ["or_dataset", "release_quantity_ladder"],
+        },
         "summary": {
             "case_count": 6,
             "passed_case_count": 6,

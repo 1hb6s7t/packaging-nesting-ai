@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 import time
 from typing import Any
 
@@ -13,6 +14,8 @@ from app.services import repository
 from app.services.artworks import checksum_bytes, new_artwork_id, preflight_artwork, save_artwork_bytes
 from app.services.batch_artworks import BatchArtworkService
 from app.services.batch_layout import BatchLayoutService
+from app.services.batch_planning import plan_batch
+from app.services.benchmark_importers import load_public_dataset_as_benchmark_case
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,14 @@ class EnterpriseBenchmarkRunner:
             "batch_id": batch.batch_id,
             "job_id": job.job_id,
             "file_count": file_count,
+            "sheet_parent": {
+                "width": 787,
+                "height": 1092,
+                "material": "white_card",
+                "thickness": "350gsm",
+            },
+            "moq_per_item": moq_per_item,
+            "top_k": top_k,
             "format_counts": parse_summary.format_counts,
             "status_counts": parse_summary.status_counts,
             "class_counts": parse_summary.class_counts,
@@ -170,6 +181,85 @@ class EnterpriseBenchmarkRunner:
             preflight_report=report,
             quantity=fixture.quantity,
             metadata=fixture.metadata,
+        )
+
+    def run_or_dataset_case(
+        self,
+        db: Session,
+        *,
+        path: Path,
+        case_id: str,
+        name: str | None = None,
+        sheet_width: float | None = None,
+        sheet_height: float | None = None,
+        material: str = "dataset_material",
+        thickness: str = "dataset_thickness",
+        planning_mode: schemas.PlanningMode = "pattern",
+    ) -> schemas.BatchBenchmarkRunRead:
+        case = load_public_dataset_as_benchmark_case(
+            path,
+            case_id=case_id,
+            name=name,
+            sheet_width=sheet_width,
+            sheet_height=sheet_height,
+            material=material,
+            thickness=thickness,
+            planning_mode=planning_mode,
+        )
+        saved = repository.upsert_benchmark_case(db, case, source="or_dataset")
+        job = schemas.NestingJob(
+            job_id=f"{saved.case_id}_enterprise_run",
+            sheet=saved.sheet,
+            candidate_items=saved.items,
+            constraints={"source": "or_dataset", "max_batch_candidates_per_sheet": 600},
+            top_k=1,
+        )
+        started = time.perf_counter()
+        result = plan_batch(job, saved.planning_mode)
+        runtime_ms = _elapsed_ms(started)
+        sheet_787x1092 = saved.sheet.width == 787 and saved.sheet.height == 1092
+        moq_1000 = all(item.quantity >= 1000 for item in saved.items)
+        metrics = {
+            "pipeline": "or_dataset_to_pattern_planner",
+            "source": "or_dataset",
+            "dataset_path": str(path),
+            "case_id": saved.case_id,
+            "planning_mode": saved.planning_mode,
+            "item_count": len(saved.items),
+            "sheet_parent": {
+                "width": saved.sheet.width,
+                "height": saved.sheet.height,
+                "material": saved.sheet.material,
+                "thickness": saved.sheet.thickness,
+            },
+            "sheet_787x1092": sheet_787x1092,
+            "moq_1000": moq_1000,
+            "requested_units": result.requested_units,
+            "produced_units": result.produced_units,
+            "shortage_units": result.shortage_units,
+            "overproduction_units": result.overproduction_units,
+            "units_per_sheet": result.units_per_sheet,
+            "sheets_used": result.sheets_used,
+            "utilization_rate": result.utilization_rate,
+            "runtime_ms": runtime_ms,
+            "planner_runtime_ms": result.runtime_ms,
+            "hard_rule_pass": result.hard_rule_pass,
+            "export_ok": result.export_ok,
+            "quantity_fulfillment_rate": result.quantity_fulfillment_rate,
+            "case_score": result.case_score,
+        }
+        return create_batch_benchmark_run(
+            db,
+            benchmark_type="or_dataset",
+            status="passed" if result.hard_rule_pass and result.quantity_fulfillment_rate >= 1.0 else "failed",
+            file_count=len(saved.items),
+            p95_runtime_ms=result.runtime_ms,
+            hard_rule_pass_rate=1.0 if result.hard_rule_pass else 0.0,
+            quantity_fulfillment_rate=result.quantity_fulfillment_rate,
+            topk_legal_rate=1.0 if result.hard_rule_pass else 0.0,
+            avg_case_score=result.case_score,
+            metrics=metrics,
+            job_id=job.job_id,
         )
 
 

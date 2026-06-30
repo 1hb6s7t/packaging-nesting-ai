@@ -112,6 +112,40 @@ def run_stress_787(
     return run
 
 
+@router.post("/run/or-dataset", response_model=BatchBenchmarkRunRead)
+def run_or_dataset(
+    payload: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("benchmark:write")),
+) -> BatchBenchmarkRunRead:
+    path_value = payload.get("path")
+    if not path_value:
+        raise HTTPException(status_code=422, detail="path is required")
+    try:
+        run = enterprise_runner.run_or_dataset_case(
+            db,
+            path=Path(path_value),
+            case_id=str(payload.get("case_id") or f"or_dataset_{int(time.time())}"),
+            name=payload.get("name"),
+            sheet_width=_maybe_float(payload.get("sheet_width")),
+            sheet_height=_maybe_float(payload.get("sheet_height")),
+            material=str(payload.get("material") or "dataset_material"),
+            thickness=str(payload.get("thickness") or "dataset_thickness"),
+            planning_mode=payload.get("planning_mode", "pattern"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    repository.log_operation(
+        db,
+        action="benchmark.or_dataset.run",
+        target_type="batch_benchmark_run",
+        target_id=run.run_id,
+        actor_id=current_user.user_id,
+        payload=run.metrics,
+    )
+    return run
+
+
 @router.post("/run/batch-1500", response_model=BatchBenchmarkRunRead)
 def run_batch_1500_stress(
     payload: dict[str, Any] | None = None,
