@@ -119,8 +119,14 @@ def build_subprocess_steps(
     full_backend: bool,
     skip_frontend: bool,
     skip_benchmark_gate: bool = False,
+    include_slow_batch_gates: bool = False,
     skip_evidence_pack: bool = False,
     evidence_output_dir: Path = Path("tmp/release-preflight-evidence"),
+    batch_1500_count: int = 1500,
+    batch_20000_count: int = 20000,
+    real_sample_root: Path | None = None,
+    allow_missing_real_samples: bool = False,
+    hash_real_sample_files: bool = False,
     env_file: Path | None = None,
     require_production_env: bool = False,
     dependency_review_file: Path | None = None,
@@ -151,6 +157,32 @@ def build_subprocess_steps(
                 cwd=REPO_ROOT,
                 env=backend_env(),
                 timeout_sec=60,
+            )
+        )
+    if include_slow_batch_gates:
+        slow_gate_command = [
+            sys.executable,
+            "scripts/enterprise_batch_slow_gates.py",
+            "--output",
+            str(evidence_output_dir / "enterprise-batch-slow-gates.json"),
+            "--batch-1500-count",
+            str(batch_1500_count),
+            "--batch-20000-count",
+            str(batch_20000_count),
+        ]
+        if real_sample_root is not None:
+            slow_gate_command.extend(["--real-sample-root", str(real_sample_root)])
+        if allow_missing_real_samples:
+            slow_gate_command.append("--allow-missing-real-samples")
+        if hash_real_sample_files:
+            slow_gate_command.append("--hash-real-sample-files")
+        steps.append(
+            CommandStep(
+                name="enterprise batch slow gates",
+                command=slow_gate_command,
+                cwd=REPO_ROOT,
+                env=backend_env(),
+                timeout_sec=1800,
             )
         )
     if not skip_evidence_pack:
@@ -296,6 +328,8 @@ def run_command_step(step: CommandStep) -> GateResult:
 def enrich_preflight_gate_result(result: GateResult, *, evidence_output_dir: Path) -> GateResult:
     if result.name == "benchmark release gate":
         return replace(result, payload=build_benchmark_gate_payload(evidence_output_dir))
+    if result.name == "enterprise batch slow gates":
+        return replace(result, payload=build_enterprise_batch_slow_gate_payload(evidence_output_dir))
     if result.name == "release evidence pack generation":
         return replace(result, payload=build_evidence_pack_manifest_payload(evidence_output_dir))
     if result.name == "release evidence pack verification":
@@ -363,7 +397,31 @@ def build_benchmark_gate_payload(evidence_output_dir: Path) -> dict[str, Any]:
                 "status": data.get("status"),
                 "thresholds": data.get("thresholds"),
                 "summary": data.get("summary"),
+                "coverage": data.get("coverage"),
                 "case_count": len(data.get("cases") or []),
+            }
+        )
+    return payload
+
+
+def build_enterprise_batch_slow_gate_payload(evidence_output_dir: Path) -> dict[str, Any]:
+    output_dir = evidence_output_dir if evidence_output_dir.is_absolute() else REPO_ROOT / evidence_output_dir
+    report_path = output_dir / "enterprise-batch-slow-gates.json"
+    payload: dict[str, Any] = {"report_path": str(report_path), "exists": report_path.is_file()}
+    report = read_json_if_present(report_path)
+    if report.get("error"):
+        payload["error"] = report["error"]
+        return payload
+    if report.get("exists"):
+        data = report["data"]
+        payload.update(
+            {
+                "status": data.get("report_status"),
+                "thresholds": data.get("thresholds"),
+                "dataset_labels": data.get("dataset_labels"),
+                "coverage": data.get("coverage"),
+                "summary": data.get("summary"),
+                "gate_count": len(data.get("gates") or []),
             }
         )
     return payload
@@ -612,6 +670,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--full-backend", action="store_true", help="Run all backend tests instead of the targeted gate.")
     parser.add_argument("--skip-frontend", action="store_true", help="Skip npm production build.")
     parser.add_argument("--skip-benchmark-gate", action="store_true", help="Skip deterministic benchmark release gate.")
+    parser.add_argument("--include-slow-batch-gates", action="store_true", help="Run generated 1500/20000 and real-sample slow gates.")
+    parser.add_argument("--batch-1500-count", type=int, default=1500, help="File count for the batch-1500 slow gate.")
+    parser.add_argument("--batch-20000-count", type=int, default=20000, help="File count for the batch-20000 slow gate.")
+    parser.add_argument("--real-sample-root", type=Path, help="Local real packaging sample directory for slow gates.")
+    parser.add_argument(
+        "--allow-missing-real-samples",
+        action="store_true",
+        help="Allow the slow gate report to skip real-sample files when the local directory is unavailable.",
+    )
+    parser.add_argument("--hash-real-sample-files", action="store_true", help="Hash local real-sample files in slow gate evidence.")
     parser.add_argument("--skip-evidence-pack", action="store_true", help="Skip local release evidence pack generation and verification.")
     parser.add_argument(
         "--evidence-output-dir",
@@ -696,6 +764,12 @@ def build_release_report(
             "full_backend": bool(args.full_backend),
             "skip_frontend": bool(args.skip_frontend),
             "skip_benchmark_gate": bool(args.skip_benchmark_gate),
+            "include_slow_batch_gates": bool(args.include_slow_batch_gates),
+            "batch_1500_count": int(args.batch_1500_count),
+            "batch_20000_count": int(args.batch_20000_count),
+            "real_sample_root": str(args.real_sample_root) if args.real_sample_root else None,
+            "allow_missing_real_samples": bool(args.allow_missing_real_samples),
+            "hash_real_sample_files": bool(args.hash_real_sample_files),
             "skip_evidence_pack": bool(args.skip_evidence_pack),
             "evidence_output_dir": str(args.evidence_output_dir),
             "env_file": str(args.env_file) if args.env_file else None,
@@ -841,8 +915,14 @@ def main(argv: list[str] | None = None) -> int:
         full_backend=args.full_backend,
         skip_frontend=args.skip_frontend,
         skip_benchmark_gate=args.skip_benchmark_gate,
+        include_slow_batch_gates=args.include_slow_batch_gates,
         skip_evidence_pack=args.skip_evidence_pack,
         evidence_output_dir=args.evidence_output_dir,
+        batch_1500_count=args.batch_1500_count,
+        batch_20000_count=args.batch_20000_count,
+        real_sample_root=args.real_sample_root,
+        allow_missing_real_samples=args.allow_missing_real_samples,
+        hash_real_sample_files=args.hash_real_sample_files,
         env_file=args.env_file,
         require_production_env=args.require_production_env,
         dependency_review_file=args.dependency_review_file,

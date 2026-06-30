@@ -95,6 +95,40 @@ def test_release_preflight_default_steps_cover_release_gates() -> None:
     assert steps[5].cwd == REPO_ROOT / "frontend"
 
 
+def test_release_preflight_can_include_enterprise_batch_slow_gates() -> None:
+    module = load_release_preflight_module()
+    sample_root = Path(r"D:\大卖数智AI部\包装印刷\甘-包装样例")
+
+    steps = module.build_subprocess_steps(
+        full_backend=False,
+        skip_frontend=True,
+        skip_evidence_pack=True,
+        include_slow_batch_gates=True,
+        evidence_output_dir=Path("tmp/slow-evidence"),
+        batch_1500_count=1500,
+        batch_20000_count=20000,
+        real_sample_root=sample_root,
+        hash_real_sample_files=True,
+    )
+
+    assert [step.name for step in steps] == [
+        "backend release gate tests",
+        "benchmark release gate",
+        "enterprise batch slow gates",
+    ]
+    command = steps[2].command
+    assert command[:3] == [sys.executable, "scripts/enterprise_batch_slow_gates.py", "--output"]
+    assert str(Path("tmp/slow-evidence") / "enterprise-batch-slow-gates.json") in command
+    assert "--batch-1500-count" in command
+    assert "1500" in command
+    assert "--batch-20000-count" in command
+    assert "20000" in command
+    assert "--real-sample-root" in command
+    assert str(sample_root) in command
+    assert "--hash-real-sample-files" in command
+    assert steps[2].timeout_sec == 1800
+
+
 def test_release_preflight_full_backend_can_skip_frontend() -> None:
     module = load_release_preflight_module()
 
@@ -244,6 +278,12 @@ def test_release_preflight_uses_auto_smoke_port_by_default() -> None:
 
     assert args.smoke_port == 0
     assert args.skip_benchmark_gate is False
+    assert args.include_slow_batch_gates is False
+    assert args.batch_1500_count == 1500
+    assert args.batch_20000_count == 20000
+    assert args.real_sample_root is None
+    assert args.allow_missing_real_samples is False
+    assert args.hash_real_sample_files is False
     assert args.skip_evidence_pack is False
     assert args.evidence_output_dir == Path("tmp/release-preflight-evidence")
     assert args.env_file is None
@@ -313,6 +353,12 @@ def test_release_preflight_report_contains_gate_and_cleanup_evidence() -> None:
     assert report["repo_root"] == str(REPO_ROOT)
     assert report["options"]["skip_frontend"] is True
     assert report["options"]["skip_benchmark_gate"] is False
+    assert report["options"]["include_slow_batch_gates"] is False
+    assert report["options"]["batch_1500_count"] == 1500
+    assert report["options"]["batch_20000_count"] == 20000
+    assert report["options"]["real_sample_root"] is None
+    assert report["options"]["allow_missing_real_samples"] is False
+    assert report["options"]["hash_real_sample_files"] is False
     assert report["options"]["skip_evidence_pack"] is False
     assert report["options"]["evidence_output_dir"] == str(Path("tmp/release-preflight-evidence"))
     assert report["options"]["env_file"] is None

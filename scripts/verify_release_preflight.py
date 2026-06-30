@@ -15,6 +15,7 @@ PRODUCTION_ENV_VERIFICATION_GATE = "release evidence production env verification
 DEPENDENCY_REVIEW_VERIFICATION_GATE = "release evidence dependency review verification"
 EXTERNAL_ACCEPTANCE_VERIFICATION_GATE = "release evidence external acceptance verification"
 BENCHMARK_GATE = "benchmark release gate"
+ENTERPRISE_BATCH_SLOW_GATE = "enterprise batch slow gates"
 PRODUCTION_ENV_ARTIFACT = "production_env_audit"
 DEPLOYMENT_COMPOSE_ARTIFACT = "deployment_compose_audit"
 DEPENDENCY_REVIEW_ARTIFACT = "dependency_review_audit"
@@ -78,6 +79,7 @@ def verify_release_preflight_report(
 
     validate_backend_gate(gate_by_name, errors)
     validate_benchmark_gate(gate_by_name, options, errors, require_benchmark_gate=require_benchmark_gate)
+    validate_enterprise_batch_slow_gate(gate_by_name, options, errors)
     validate_frontend_gate(gate_by_name, options, errors, require_frontend=require_frontend)
     validate_smoke_gate(gate_by_name, options, errors, require_smoke=require_smoke)
     validate_evidence_gates(gate_by_name, options, errors, require_evidence_pack=require_evidence_pack)
@@ -255,6 +257,74 @@ def validate_benchmark_gate(
     peak_rss = summary.get("peak_rss_mb")
     if isinstance(max_peak_rss, (int, float)) and isinstance(peak_rss, (int, float)) and peak_rss > max_peak_rss:
         errors.append("benchmark release gate peak RSS exceeds threshold")
+
+
+def validate_enterprise_batch_slow_gate(
+    gate_by_name: dict[Any, dict[str, Any]],
+    options: dict[str, Any],
+    errors: list[str],
+) -> None:
+    include_slow_gates = options.get("include_slow_batch_gates") is True
+    gate = gate_by_name.get(ENTERPRISE_BATCH_SLOW_GATE)
+    if include_slow_gates and gate is None:
+        errors.append("enterprise batch slow gates are missing")
+        return
+    if gate is None:
+        return
+    payload = gate.get("payload")
+    if not isinstance(payload, dict):
+        errors.append("enterprise batch slow gate payload is missing")
+        return
+    if payload.get("error"):
+        errors.append(f"enterprise batch slow gate report could not be read: {payload['error']}")
+    if payload.get("exists") is not True:
+        errors.append("enterprise batch slow gate report was not recorded as existing")
+    if payload.get("status") != "passed":
+        errors.append(f"enterprise batch slow gate status must be passed, got {payload.get('status') or '<missing>'}")
+    thresholds = payload.get("thresholds")
+    if not isinstance(thresholds, dict):
+        errors.append("enterprise batch slow gate thresholds are missing")
+    dataset_labels = payload.get("dataset_labels")
+    if not isinstance(dataset_labels, dict):
+        errors.append("enterprise batch slow gate dataset labels are missing")
+        dataset_labels = {}
+    if dataset_labels.get("batch_1500") != "generated_synthetic_svg_dxf_pdf_placeholders":
+        errors.append("enterprise batch slow gate must label batch_1500 as generated synthetic")
+    if dataset_labels.get("batch_20000") != "generated_synthetic_svg_dxf_pdf_placeholders":
+        errors.append("enterprise batch slow gate must label batch_20000 as generated synthetic")
+    if dataset_labels.get("real_sample_classification") != "real_customer_sample_fixture_bbox":
+        errors.append("enterprise batch slow gate must label real samples as fixture bbox evidence")
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict):
+        errors.append("enterprise batch slow gate coverage is missing")
+        coverage = {}
+    for key in (
+        "batch_1500",
+        "batch_20000",
+        "real_sample_classification",
+        "sheet_787x1092",
+        "moq_1000",
+        "top3",
+        "synthetic_labels",
+    ):
+        if coverage.get(key) is not True:
+            errors.append(f"enterprise batch slow gate must include {key} coverage")
+    if options.get("real_sample_root") and coverage.get("real_sample_directory") is not True:
+        errors.append("enterprise batch slow gate must include the configured real sample directory")
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        errors.append("enterprise batch slow gate summary is missing")
+        return
+    if summary.get("failed_gate_count") not in {0, None}:
+        errors.append("enterprise batch slow gate has failed gates")
+    if summary.get("error_count") not in {0, None}:
+        errors.append("enterprise batch slow gate summary has errors")
+    if not isinstance(summary.get("synthetic_file_count"), int) or summary["synthetic_file_count"] < 2:
+        errors.append("enterprise batch slow gate synthetic file count is missing")
+    if not isinstance(summary.get("real_sample_case_count"), int) or summary["real_sample_case_count"] < 1:
+        errors.append("enterprise batch slow gate real sample case count is missing")
+    if options.get("real_sample_root") and summary.get("real_sample_missing_file_count") not in {0, None}:
+        errors.append("enterprise batch slow gate has missing real sample files")
 
 
 def validate_smoke_gate(

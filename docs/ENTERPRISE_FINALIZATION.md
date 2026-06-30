@@ -12,6 +12,7 @@ This addendum records the final local enterprise-hardening work completed after 
 
 - `samples/artworks/real-sample-classification-fixtures.json` records the accepted classes for the real packaging samples: coffee machine `FULL_SHEET`, soy milk machine and large outer box `ANCHOR`, Gage/capsule boxes `FILLER`, and cat litter box `OVERSIZE`.
 - `scripts/audit_real_sample_classification.py` verifies the fixture against the local real-sample directory when it is available, without claiming native PDF production geometry.
+- `scripts/enterprise_batch_slow_gates.py` produces the heavy release artifact for generated 1500-file and 20000-file batch pipelines plus real-sample classification evidence, with explicit synthetic/real dataset labels.
 - `backend/app/services/batch_planning.py` provides `single_sheet`, `pattern`, and `expanded` planning modes.
 - `backend/app/services/batch_patterns.py` now separates `PatternPlanner`, `ProductionPlanBuilder`, and `TopKGlobalPlanSelector` from batch layout persistence/orchestration.
 - Pattern planning calculates units per sheet, required sheets, produced units, overproduction, shortage, and quantity fulfillment.
@@ -31,7 +32,9 @@ This addendum records the final local enterprise-hardening work completed after 
 
 - `scripts/benchmark_release_gate.py` runs deterministic 787x1092 benchmark gates and writes `benchmark-release-gate.json`.
 - `scripts/release_preflight.py` runs the benchmark gate by default and embeds its payload in the preflight report.
+- `scripts/release_preflight.py --include-slow-batch-gates` runs `enterprise_batch_slow_gates.py` and embeds `enterprise-batch-slow-gates.json` into the preflight report.
 - `scripts/verify_release_preflight.py` verifies that benchmark gates cover Pattern and Expanded modes, 1000/3000/5000/10000/15000 quantities, quantity fulfillment thresholds, runtime thresholds, and RSS thresholds when configured.
+- `scripts/verify_release_preflight.py` also verifies the slow-gate payload when `include_slow_batch_gates=true`, including `batch_1500`, `batch_20000`, real-sample classification, 787x1092, MOQ1000, Top3, and synthetic/real dataset labels.
 - Targeted preflight backend tests now include AI safety, solution approval, external solver adapters, batch planning, benchmark importers, benchmark release gate, and 787 stress tests.
 
 ## AI tool governance

@@ -149,6 +149,70 @@ def test_verify_release_preflight_rejects_missing_benchmark_coverage(tmp_path: P
     assert "benchmark release gate must include OR-Datasets coverage" in report["errors"]
 
 
+def test_verify_release_preflight_accepts_enterprise_batch_slow_gate(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["include_slow_batch_gates"] = True
+    payload["options"]["real_sample_root"] = r"D:\大卖数智AI部\包装印刷\甘-包装样例"
+    payload["gates"].insert(
+        2,
+        {
+            "name": "enterprise batch slow gates",
+            "kind": "command",
+            "status": "passed",
+            "duration_sec": 1.0,
+            "exit_code": 0,
+            "payload": enterprise_batch_slow_gate_payload(),
+        },
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "passed"
+
+
+def test_verify_release_preflight_rejects_missing_enterprise_batch_slow_gate_coverage(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["include_slow_batch_gates"] = True
+    slow_payload = enterprise_batch_slow_gate_payload()
+    slow_payload.pop("coverage")
+    payload["gates"].insert(
+        2,
+        {
+            "name": "enterprise batch slow gates",
+            "kind": "command",
+            "status": "passed",
+            "duration_sec": 1.0,
+            "exit_code": 0,
+            "payload": slow_payload,
+        },
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "enterprise batch slow gate coverage is missing" in report["errors"]
+    assert "enterprise batch slow gate must include batch_1500 coverage" in report["errors"]
+
+
+def test_verify_release_preflight_requires_enterprise_batch_slow_gate_when_option_is_set(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["include_slow_batch_gates"] = True
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "enterprise batch slow gates are missing" in report["errors"]
+
+
 def test_verify_release_preflight_requires_dependency_review_artifact_when_option_is_set(tmp_path: Path) -> None:
     module = load_verify_release_preflight_module()
     payload = valid_preflight_report()
@@ -579,6 +643,12 @@ def valid_preflight_report() -> dict:
             "skip_frontend": False,
             "skip_evidence_pack": False,
             "skip_benchmark_gate": False,
+            "include_slow_batch_gates": False,
+            "batch_1500_count": 1500,
+            "batch_20000_count": 20000,
+            "real_sample_root": None,
+            "allow_missing_real_samples": False,
+            "hash_real_sample_files": False,
             "skip_smoke": False,
             "env_file": None,
             "require_production_env": False,
@@ -797,6 +867,54 @@ def benchmark_gate_payload(*, error_count: int = 0) -> dict:
             "total_runtime_ms": 200,
             "wall_time_ms": 250,
             "peak_rss_mb": 200.0,
+            "error_count": error_count,
+        },
+    }
+
+
+def enterprise_batch_slow_gate_payload(*, error_count: int = 0) -> dict:
+    status = "passed" if error_count == 0 else "failed"
+    return {
+        "report_path": "tmp/release-preflight-evidence/enterprise-batch-slow-gates.json",
+        "exists": True,
+        "status": status,
+        "thresholds": {
+            "min_hard_rule_pass_rate": 1.0,
+            "min_quantity_fulfillment_rate": 1.0,
+            "min_topk_legal_rate": 0.99,
+            "min_avg_case_score": 90.0,
+            "max_batch_1500_p95_runtime_ms": None,
+            "max_batch_20000_p95_runtime_ms": None,
+        },
+        "dataset_labels": {
+            "batch_1500": "generated_synthetic_svg_dxf_pdf_placeholders",
+            "batch_20000": "generated_synthetic_svg_dxf_pdf_placeholders",
+            "real_sample_classification": "real_customer_sample_fixture_bbox",
+        },
+        "coverage": {
+            "batch_1500": True,
+            "batch_20000": True,
+            "real_sample_classification": True,
+            "real_sample_directory": True,
+            "sheet_787x1092": True,
+            "moq_1000": True,
+            "top3": True,
+            "synthetic_labels": True,
+        },
+        "summary": {
+            "gate_count": 3,
+            "passed_gate_count": 3,
+            "failed_gate_count": 0,
+            "skipped_gate_count": 0,
+            "synthetic_file_count": 21500,
+            "real_sample_case_count": 6,
+            "real_sample_missing_file_count": 0,
+            "min_hard_rule_pass_rate": 1.0,
+            "min_quantity_fulfillment_rate": 1.0,
+            "min_topk_legal_rate": 1.0,
+            "avg_case_score": 100.0,
+            "p95_runtime_ms": 100,
+            "wall_time_ms": 500,
             "error_count": error_count,
         },
     }

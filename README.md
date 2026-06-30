@@ -58,6 +58,12 @@ pytest -q tests\backend
 python scripts\release_preflight.py
 ```
 
+企业级批量慢门禁默认不跑 1500/20000 全量，发布验收时显式开启：
+
+```powershell
+python scripts\release_preflight.py --include-slow-batch-gates --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files --report-path artifacts\release-preflight.json --evidence-output-dir artifacts\release-preflight-evidence
+```
+
 企业级最终完善说明见 `docs/ENTERPRISE_FINALIZATION.md`，其中汇总了批量排产模式、787x1092 benchmark 门禁、公开数据集导入、外部 CLI Solver 契约和 AI 工具治理边界。
 
 默认会运行后端发布门禁测试、仓库忽略规则审计、集成/审计脱敏回归、本地交付证据包生成与完整性验证、前端生产构建和临时 API 健康冒烟；API 冒烟默认自动选择可用本地端口，需要固定端口时使用 `--smoke-port 8030`；需要完整后端回归时使用 `python scripts\release_preflight.py --full-backend`，仅调试测试/构建时可用 `--skip-evidence-pack` 跳过证据包门禁。

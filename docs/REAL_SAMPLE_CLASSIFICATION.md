@@ -41,6 +41,12 @@ Optional file hashing:
 python scripts\audit_real_sample_classification.py --require-files --hash-files --output tmp\real-sample-classification-audit.json
 ```
 
+The enterprise slow-gate artifact can include this same real-sample fixture alongside generated 1500/20000 batch evidence:
+
+```powershell
+python scripts\enterprise_batch_slow_gates.py --output artifacts\enterprise-batch-slow-gates.json --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files
+```
+
 ## Current Local Evidence
 
 The latest local run found all six real sample files and all six expected classifications matched.
@@ -53,8 +59,18 @@ missing_file_count=0
 error_count=0
 ```
 
+The reduced enterprise slow-gate smoke with `--hash-real-sample-files` also passed against the same directory:
+
+```text
+report=tmp\enterprise-batch-slow-gates-reduced-real-samples-hash.json
+synthetic_file_count=27
+real_sample_case_count=6
+error_count=0
+```
+
 ## Boundary
 
 - PDF/AI/CDR files remain conversion/manual-review inputs until a tested native parser or accepted conversion supplier path is available.
 - The classification fixture proves the enterprise class decision rules for these real sample names and accepted dimensions.
+- The enterprise slow gate labels this evidence as `real_customer_sample_fixture_bbox`.
 - It does not prove exact production placement geometry or native PDF die-line extraction.
