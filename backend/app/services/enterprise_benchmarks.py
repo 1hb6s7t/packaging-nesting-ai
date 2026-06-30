@@ -6,12 +6,19 @@ from pathlib import Path
 import time
 from typing import Any
 
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db import models as dbm
 from app.domain import schemas
 from app.services import repository
-from app.services.artworks import checksum_bytes, new_artwork_id, preflight_artwork, save_artwork_bytes
+from app.services.artworks import (
+    checksum_bytes,
+    new_artwork_id,
+    parse_vector_polygons,
+    preflight_artwork,
+    save_artwork_bytes,
+)
 from app.services.batch_artworks import BatchArtworkService
 from app.services.batch_layout import BatchLayoutService
 from app.services.batch_planning import plan_batch
@@ -62,8 +69,7 @@ class EnterpriseBenchmarkRunner:
                 "include_pdf_fallback": include_pdf_fallback,
             },
         )
-        for fixture in fixtures:
-            self._persist_fixture(db, batch.batch_id, fixture)
+        self._persist_fixtures_bulk(db, batch.batch_id, fixtures)
         stage_runtime_ms["upload_ms"] = _elapsed_ms(started)
 
         started = time.perf_counter()
@@ -71,7 +77,7 @@ class EnterpriseBenchmarkRunner:
         stage_runtime_ms["preflight_ms"] = _elapsed_ms(started)
 
         started = time.perf_counter()
-        parse_summary = self.batch_artworks.parse_batch(db, batch.batch_id)
+        parse_summary = self._parse_generated_batch_bulk(db, batch.batch_id)
         stage_runtime_ms["parse_ms"] = _elapsed_ms(started)
 
         started = time.perf_counter()
@@ -155,6 +161,161 @@ class EnterpriseBenchmarkRunner:
             metrics=metrics,
             job_id=job.job_id,
         )
+
+    def _persist_fixtures_bulk(
+        self,
+        db: Session,
+        batch_id: str,
+        fixtures: list[SyntheticArtworkFixture],
+        *,
+        chunk_size: int = 1000,
+    ) -> None:
+        batch_row = db.get(dbm.BatchUpload, batch_id)
+        persisted = 0
+        for fixture in fixtures:
+            artwork_id = new_artwork_id()
+            data = fixture.content.encode("utf-8")
+            checksum = checksum_bytes(data)
+            storage_key = save_artwork_bytes(artwork_id, fixture.filename, data)
+            report = preflight_artwork(fixture.filename, fixture.content, fixture.content_type)
+            db.add(
+                dbm.ArtworkFile(
+                    id=artwork_id,
+                    filename=fixture.filename,
+                    content_type=fixture.content_type,
+                    checksum=checksum,
+                    source_format=report.source_format,
+                    storage_key=storage_key,
+                    status="uploaded",
+                )
+            )
+            db.add(
+                dbm.FilePreflightReport(
+                    artwork_file_id=artwork_id,
+                    can_parse_directly=report.can_parse_directly,
+                    requires_conversion=report.requires_conversion,
+                    requires_manual_review=report.requires_manual_review,
+                    report=report.model_dump(mode="json"),
+                )
+            )
+            db.add(
+                dbm.BatchArtworkItem(
+                    batch_id=batch_id,
+                    artwork_file_id=artwork_id,
+                    filename=fixture.filename,
+                    content_type=fixture.content_type,
+                    checksum=checksum,
+                    source_format=report.source_format,
+                    status="uploaded",
+                    quantity=max(1, fixture.quantity),
+                    preflight_report_json=report.model_dump(mode="json"),
+                    metadata_json=fixture.metadata,
+                )
+            )
+            persisted += 1
+            if persisted % chunk_size == 0:
+                if batch_row is not None:
+                    batch_row.item_count = persisted
+                    batch_row.uploaded_count = persisted
+                db.commit()
+                batch_row = db.get(dbm.BatchUpload, batch_id)
+        if batch_row is not None:
+            batch_row.item_count = persisted
+            batch_row.uploaded_count = persisted
+        db.commit()
+        self.batch_artworks.refresh_batch_counts(db, batch_id)
+
+    def _parse_generated_batch_bulk(
+        self,
+        db: Session,
+        batch_id: str,
+        *,
+        chunk_size: int = 1000,
+    ) -> schemas.BatchArtworkSummary:
+        parent = schemas.SheetParentSpec()
+        rows = db.scalars(
+            select(dbm.BatchArtworkItem)
+            .where(dbm.BatchArtworkItem.batch_id == batch_id)
+            .order_by(dbm.BatchArtworkItem.created_at, dbm.BatchArtworkItem.id)
+        ).all()
+        parsed_artwork_ids: list[str] = []
+        parsed_count = 0
+        batch_row = db.get(dbm.BatchUpload, batch_id)
+        for index, row in enumerate(rows, start=1):
+            report = schemas.PreflightReport.model_validate(row.preflight_report_json)
+            if row.source_format in {"svg", "dxf"}:
+                try:
+                    content = repository.load_artwork_content(db, row.artwork_file_id or "")
+                    if content is None:
+                        raise ValueError("original artwork content is missing from storage")
+                    polygons = parse_vector_polygons(content, row.source_format, row.artwork_file_id or row.id)
+                    for polygon in polygons:
+                        bbox = polygon.bbox
+                        db.add(
+                            dbm.PolygonAsset(
+                                id=f"{row.artwork_file_id}:{polygon.shape_id}",
+                                artwork_file_id=row.artwork_file_id,
+                                unit=polygon.unit,
+                                polygon_json=polygon.model_dump(mode="json"),
+                                area=polygon.area or 0,
+                                bbox_width=bbox.width if bbox else 0,
+                                bbox_height=bbox.height if bbox else 0,
+                            )
+                        )
+                    feature = self.batch_artworks.extractor.extract(polygons, preflight_report=report)
+                    row.feature_json = feature.model_dump(mode="json")
+                    row.classification = self.batch_artworks.classifier.classify(
+                        feature,
+                        parent=parent,
+                        source_format=row.source_format,
+                    )
+                    row.status = "parsed"
+                    row.parse_error = None
+                    parsed_count += 1
+                    if row.artwork_file_id:
+                        parsed_artwork_ids.append(row.artwork_file_id)
+                except Exception as exc:
+                    feature = self.batch_artworks.extractor.extract([], preflight_report=report)
+                    row.feature_json = feature.model_dump(mode="json")
+                    row.classification = self.batch_artworks.classifier.classify(
+                        feature,
+                        parent=parent,
+                        source_format=row.source_format,
+                    )
+                    row.status = "failed"
+                    row.parse_error = str(exc)
+            else:
+                feature = self.batch_artworks.extractor.extract([], preflight_report=report)
+                row.feature_json = feature.model_dump(mode="json")
+                row.classification = self.batch_artworks.classifier.classify(
+                    feature,
+                    parent=parent,
+                    source_format=row.source_format,
+                )
+                row.status = "manual_review" if report.requires_manual_review else "conversion_required"
+                row.parse_error = "Direct geometry parsing supports SVG/DXF; conversion is required before coordinates."
+
+            if index % chunk_size == 0:
+                self._mark_artworks_parsed(db, parsed_artwork_ids)
+                parsed_artwork_ids = []
+                if batch_row is not None:
+                    batch_row.parsed_count = parsed_count
+                    batch_row.preflighted_count = max(0, len(rows) - parsed_count)
+                db.commit()
+                batch_row = db.get(dbm.BatchUpload, batch_id)
+
+        self._mark_artworks_parsed(db, parsed_artwork_ids)
+        if batch_row is not None:
+            batch_row.parsed_count = parsed_count
+            batch_row.preflighted_count = max(0, len(rows) - parsed_count)
+        db.commit()
+        self.batch_artworks.refresh_batch_counts(db, batch_id)
+        return self.batch_artworks.summary(db, batch_id)
+
+    def _mark_artworks_parsed(self, db: Session, artwork_ids: list[str]) -> None:
+        if not artwork_ids:
+            return
+        db.execute(update(dbm.ArtworkFile).where(dbm.ArtworkFile.id.in_(artwork_ids)).values(status="parsed"))
 
     def _persist_fixture(self, db: Session, batch_id: str, fixture: SyntheticArtworkFixture) -> None:
         artwork_id = new_artwork_id()

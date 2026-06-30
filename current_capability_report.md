@@ -31,7 +31,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | External CLI solver contracts | Enterprise foundation present | `backend/app/services/solvers/external_cli_adapters.py`, `backend/app/services/solvers/cli_runner.py`, `tests/backend/test_external_solver_adapters.py` |
 | Benchmark release gate | Enterprise foundation present | `scripts/benchmark_release_gate.py`, `scripts/enterprise_batch_slow_gates.py`, `scripts/release_preflight.py`, `scripts/verify_release_preflight.py`, `tests/backend/test_benchmark_release_gate.py`, `tests/backend/test_enterprise_batch_slow_gates.py`, `tests/backend/test_verify_release_preflight.py` |
 | Frontend batch workbench | MVP to enterprise foundation | `frontend/src/views/BatchWorkbench.vue`, `frontend/src/services/api.ts`, `frontend/src/router/index.ts`; includes upload/preflight/parse/retry, Top3 workflow, 787/1500/20000 stress controls |
-| AI safety boundary | Enterprise usable for current single-job and batch workflow tools | `backend/app/services/ai_tools.py`, `backend/app/api/routes/ai.py`, `tests/backend/test_ai_tools.py` |
+| AI safety boundary | Enterprise usable for current single-job and batch workflow tools | `backend/app/services/ai_tools.py`, `backend/app/api/routes/ai.py`, `docs/AI_BATCH_TOOLS.md`, `tests/backend/test_ai_tools.py` |
 
 ## MVP Capabilities
 
@@ -84,7 +84,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
   `frontend/src/services/api.ts` now exposes `retry-failed` and `batch-20000`; dedicated pages and history views are still pending.
 
 - Continue hardening AI tool governance for batch-specific workflows.
-  The batch tool surface now covers query, features, create/run, Top3 comparison, and report generation; go-live documentation and operator playbooks should continue to stress that AI cannot export or bypass approval.
+  The batch tool surface now covers query, features, create/run, Top3 comparison, and report generation; `docs/AI_BATCH_TOOLS.md` now provides the operator playbook and stresses that AI cannot export or bypass approval.
 
 - Keep AI authentication docs aligned with code.
   `README.md`, `docs/DEPLOYMENT.md`, and `docs/OPERATIONS.md` now state that AI tool schema access requires Bearer Token and `ai:use`.
@@ -138,7 +138,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | A4 SparrowSolverAdapter | Contract complete; real binary acceptance not proven. |
 | A5 PatternPlanner | Extracted to `batch_patterns.py` with mixed multi-item quantity summaries; exact placement persistence and broader real-sample proof still needed. |
 | A5 Top3GlobalPlanSelector | Extracted with `ProductionPlanBuilder`; stronger diversity/validity proof over real mixed irregular shapes still needed. |
-| A6 Benchmark gate | Foundation complete for OR/787/MOQ, generated batch-1500/20000 endpoint coverage, and opt-in slow-gate artifacts with explicit synthetic/real labels. |
+| A6 Benchmark gate | Foundation complete for OR/787/MOQ, generated batch-1500/20000 endpoint coverage, full local 1500+20000 slow-gate artifact, and explicit synthetic/real labels. |
 | A6 OR-Datasets importer | Present. |
 | A7 前端批量页面 | Foundation present as one workbench with retry and batch-20000 controls; dedicated enterprise pages, virtualization, and history views still missing. |
 | A8 AI工具扩展 | Batch workflow tools now cover query/features/create/run/Top3/report with RBAC gates; production export remains blocked and go-live docs/evidence still need final closure. |
@@ -146,24 +146,28 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 ## Recommended Next Implementation Order
 
-1. Run and archive the full slow-gate artifact on the real sample workstation: `enterprise_batch_slow_gates.py` with 1500/20000 and `--hash-real-sample-files`.
-2. Add operator-facing batch AI playbooks that show controlled query/run/report flows and explicitly exclude export/approval bypass.
-3. Persist exact per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
-4. Add native PDF/conversion-supplier acceptance evidence before treating PDF die-lines as production geometry.
-5. Add configured PackingSolver/Sparrow binary acceptance evidence.
+1. Persist exact per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
+2. Add native PDF/conversion-supplier acceptance evidence before treating PDF die-lines as production geometry.
+3. Add configured PackingSolver/Sparrow binary acceptance evidence.
+4. Split frontend batch workbench into dedicated enterprise views with virtualization/history when 1500-20000 rows are active.
+5. Promote high-value solver attempt evidence from JSON logs into indexed first-class fields or artifact keys.
 
 ## Current Verification Snapshot
 
 This report and the contract patches made with it were verified with:
 
-- `$env:PYTHONPATH='backend'; python -m pytest -q tests\backend`: 478 passed, 2 skipped, 1 warning.
+- `$env:PYTHONPATH='backend'; python -m pytest -q tests\backend`: 480 passed, 2 skipped, 1 warning.
 - `python -m ruff check backend tests scripts`: passed.
 - `npm.cmd run build` from `frontend/`: passed.
+- `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-ai-playbook.json`: passed, 7 cases, 0 errors, P95 23 ms.
+- `python scripts\release_preflight.py --include-slow-batch-gates --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files --report-path tmp\release-preflight-ai-playbook.json`: passed; included 400 backend release-gate tests, benchmark gate, full 1500/20000 slow gates, 6 hashed real sample cases, release evidence pack verification, frontend build, and API smoke.
 - `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-slow-gates.json`: passed, 7 cases, 0 errors, P95 27 ms.
 - `python scripts\audit_real_sample_classification.py --require-files --output tmp\real-sample-classification-audit.json`: passed, 6 cases, 6 classification matches, 0 missing files.
 - `pytest -q tests\backend\test_enterprise_batch_slow_gates.py tests\backend\test_release_preflight.py tests\backend\test_verify_release_preflight.py`: passed, 51 tests.
 - `python -m ruff check scripts\enterprise_batch_slow_gates.py scripts\release_preflight.py scripts\verify_release_preflight.py tests\backend\test_enterprise_batch_slow_gates.py tests\backend\test_release_preflight.py tests\backend\test_verify_release_preflight.py`: passed.
-- `python scripts\enterprise_batch_slow_gates.py --output tmp\enterprise-batch-slow-gates-reduced-real-samples-hash.json --batch-1500-count 12 --batch-20000-count 15 --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files`: passed, 3 gates, 27 generated files, 6 real sample cases, 0 errors.
+- `python scripts\enterprise_batch_slow_gates.py --output artifacts\enterprise-batch-slow-gates-full.json --batch-1500-count 1500 --batch-20000-count 20000 --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files`: passed, 3 gates, 21,500 generated files, 6 real sample cases, 0 errors, wall time 155,089 ms.
+- `$env:PYTHONPATH='backend'; python -m pytest -q tests\backend\test_ai_tools.py`: passed, 5 tests.
+- `python -m ruff check backend\app\services\ai_tools.py tests\backend\test_ai_tools.py`: passed.
 - `git diff --check`: no whitespace errors; Windows line-ending warnings only.
 
 This report is an audit artifact plus a contract-alignment record. Any implementation changes after this report must rerun the relevant backend/frontend/release gates before being considered complete.

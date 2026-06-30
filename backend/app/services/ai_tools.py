@@ -258,6 +258,10 @@ def plan_ai_tool_calls(message: str) -> list[dict[str, Any]]:
             planned.append({"tool_name": "generate_report", "arguments": {"solution_id": "<solution_id>"}})
     if any(token in text for token in ("batch", "批量", "features", "特征", "分类")):
         planned.append({"tool_name": "get_batch_summary", "arguments": {"batch_id": "<batch_id>"}})
+    if any(token in text for token in ("features", "feature", "classification", "classifications")) and not any(
+        item["tool_name"] == "get_batch_features" for item in planned
+    ):
+        planned.append({"tool_name": "get_batch_features", "arguments": {"batch_id": "<batch_id>"}})
     if not planned:
         planned.append({"tool_name": "search_orders", "arguments": {"query": message}})
     return planned

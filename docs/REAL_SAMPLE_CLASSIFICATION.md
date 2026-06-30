@@ -68,6 +68,15 @@ real_sample_case_count=6
 error_count=0
 ```
 
+The full enterprise slow gate also passed:
+
+```text
+report=artifacts\enterprise-batch-slow-gates-full.json
+synthetic_file_count=21500
+real_sample_case_count=6
+error_count=0
+```
+
 ## Boundary
 
 - PDF/AI/CDR files remain conversion/manual-review inputs until a tested native parser or accepted conversion supplier path is available.

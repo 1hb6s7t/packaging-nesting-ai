@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -227,6 +228,16 @@ def test_ai_batch_tools_run_top3_pipeline_and_gate_write_permissions() -> None:
     assert denied_payload["status"] == "failed"
     assert "batch:write" in denied_payload["message"]
 
+    denied_run = client.post(
+        "/api/ai/tools/execute",
+        json={"tool_name": "run_batch_layout_job", "arguments": {"job_id": "missing-job"}},
+        headers=ai_only_headers,
+    )
+    assert denied_run.status_code == 200
+    denied_run_payload = denied_run.json()
+    assert denied_run_payload["status"] == "failed"
+    assert "batch:write" in denied_run_payload["message"]
+
     summary_payload = client.post(
         "/api/ai/tools/execute",
         json={"tool_name": "get_batch_summary", "arguments": {"batch_id": batch_id}},
@@ -245,10 +256,38 @@ def test_ai_batch_tools_run_top3_pipeline_and_gate_write_permissions() -> None:
     ).json()
     assert features_payload["status"] == "completed"
     assert features_payload["result"]["count"] == 1
+    actual_classification = features_payload["result"]["items"][0]["classification"]
     feature = features_payload["result"]["items"][0]["feature"]
     assert feature["bbox_width"] == 90
     assert feature["bbox_height"] == 70
     assert "bbox" not in feature
+
+    filtered_features = client.post(
+        "/api/ai/tools/execute",
+        json={
+            "tool_name": "get_batch_features",
+            "arguments": {
+                "batch_id": batch_id,
+                "classification": actual_classification,
+                "status": "parsed",
+                "limit": 999,
+            },
+        },
+        headers=ai_only_headers,
+    ).json()
+    assert filtered_features["status"] == "completed"
+    assert filtered_features["result"]["count"] == 1
+
+    wrong_classification = next(
+        item for item in ["FULL_SHEET", "ANCHOR", "FILLER", "OVERSIZE"] if item != actual_classification
+    )
+    empty_features = client.post(
+        "/api/ai/tools/execute",
+        json={"tool_name": "get_batch_features", "arguments": {"batch_id": batch_id, "classification": wrong_classification}},
+        headers=ai_only_headers,
+    ).json()
+    assert empty_features["status"] == "completed"
+    assert empty_features["result"]["count"] == 0
 
     create_payload = client.post(
         "/api/ai/tools/execute",
@@ -304,6 +343,16 @@ def test_ai_batch_tools_run_top3_pipeline_and_gate_write_permissions() -> None:
     assert report["safety"]["requires_approval_before_export"] is True
     assert report["safety"]["production_export_allowed"] is False
 
+    logs = client.get("/api/operation-logs?limit=50", headers=admin_headers).json()
+    assert any(
+        log["action"] == "ai.tool.execute"
+        and log["target_id"] == "run_batch_layout_job"
+        and log["payload"]["arguments"]["job_id"] == job_id
+        and log["payload"]["safety"]["ai_generated_coordinates"] is False
+        and log["payload"]["safety"]["production_export_allowed"] is False
+        for log in logs
+    )
+
     chat_payload = client.post(
         "/api/ai/chat",
         json={"message": "compare batch top3 report"},
@@ -313,3 +362,67 @@ def test_ai_batch_tools_run_top3_pipeline_and_gate_write_permissions() -> None:
     assert "compare_batch_top3" in planned_tools
     assert "generate_batch_report" in planned_tools
     assert "get_batch_summary" in planned_tools
+
+    feature_chat_payload = client.post(
+        "/api/ai/chat",
+        json={"message": "show batch features and classification"},
+        headers=ai_only_headers,
+    ).json()
+    feature_planned_tools = {item["tool_name"] for item in feature_chat_payload["recommended_tool_calls"]}
+    assert "get_batch_features" in feature_planned_tools
+
+
+def test_ai_batch_report_exposes_blockers_before_layout_run() -> None:
+    suffix = uuid4().hex[:8]
+    admin_headers = auth_headers(client)
+    batch_id = _create_parsed_ai_batch(admin_headers, suffix)
+
+    create_payload = client.post(
+        "/api/ai/tools/execute",
+        json={
+            "tool_name": "create_batch_layout_job",
+            "arguments": {
+                "batch_id": batch_id,
+                "moq_per_item": 1000,
+                "top_k": 3,
+                "sheet_parent": {"parent_id": f"PARENT_AI_BLOCKER_{suffix}", "width": 787, "height": 1092},
+            },
+        },
+        headers=admin_headers,
+    ).json()
+    assert create_payload["status"] == "completed"
+    job_id = create_payload["result"]["job"]["job_id"]
+
+    report_payload = client.post(
+        "/api/ai/tools/execute",
+        json={"tool_name": "generate_batch_report", "arguments": {"job_id": job_id}},
+        headers=admin_headers,
+    ).json()
+
+    assert report_payload["status"] == "completed"
+    report = report_payload["result"]["report"]
+    assert report["plan_count"] == 0
+    assert "no production plans are available" in report["blocked_reasons"]
+    assert report["safety"]["production_export_allowed"] is False
+    assert report["safety"]["requires_approval_before_export"] is True
+
+
+def test_ai_batch_operator_playbook_lists_tools_and_forbidden_actions() -> None:
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "AI_BATCH_TOOLS.md").read_text(encoding="utf-8")
+    for tool_name in [
+        "get_batch_summary",
+        "get_batch_features",
+        "create_batch_layout_job",
+        "run_batch_layout_job",
+        "compare_batch_top3",
+        "generate_batch_report",
+    ]:
+        assert tool_name in doc
+    for required_text in [
+        "POST /api/ai/tools/execute",
+        "production_export_allowed=false",
+        "requires_approval_before_export=true",
+        "AI tools do not approve production plans",
+        "AI tools do not export production PDF",
+    ]:
+        assert required_text in doc
