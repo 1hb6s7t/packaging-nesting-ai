@@ -160,6 +160,7 @@ def test_rbac_seeded_enterprise_role_templates() -> None:
     assert "solvers:manage" in codes
     assert "solutions:export" in codes
     assert "solutions:archive" in codes
+    assert "batch:write" in codes
 
     roles = client.get("/api/rbac/roles", headers=admin_headers)
     assert roles.status_code == 200
@@ -184,3 +185,5 @@ def test_rbac_seeded_enterprise_role_templates() -> None:
     assert set(by_name["operations_manager"]["permission_codes"]) >= {"solutions:archive", "tasks:manage", "audit:read"}
     assert "solvers:manage" in by_name["benchmark_engineer"]["permission_codes"]
     assert by_name["solution_approver"]["permission_codes"] == ["audit:read", "solutions:approve"]
+    assert "batch:write" in by_name["print_planner"]["permission_codes"]
+    assert "batch:write" in by_name["benchmark_engineer"]["permission_codes"]

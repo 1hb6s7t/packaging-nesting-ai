@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import {
-  Bell,
   BarChart3,
+  Bell,
   Bot,
   Boxes,
   ClipboardList,
   FileClock,
   FileInput,
+  Files,
   Gauge,
   GitCompare,
   KeyRound,
@@ -20,7 +21,7 @@ import {
   Settings2,
   ShieldCheck,
   TableProperties,
-  Upload,
+  Upload
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
@@ -38,6 +39,7 @@ const nav = [
   { path: "/orders", label: "订单池", icon: ClipboardList },
   { path: "/artworks", label: "版图上传", icon: Upload },
   { path: "/artworks/preflight", label: "版图预检", icon: FileInput },
+  { path: "/batch", label: "批量工作台", icon: Files },
   { path: "/sheets", label: "纸张规格", icon: TableProperties },
   { path: "/nesting/jobs", label: "拼版任务", icon: Boxes },
   { path: "/nesting/monitor", label: "运行监控", icon: Gauge },
@@ -53,7 +55,7 @@ const nav = [
   { path: "/operation-logs", label: "操作日志", icon: PackageCheck },
   { path: "/notifications", label: "通知中心", icon: Bell },
   { path: "/permissions", label: "权限管理", icon: ShieldCheck },
-  { path: "/login", label: "登录", icon: LogIn },
+  { path: "/login", label: "登录", icon: LogIn }
 ];
 
 const visibleNav = computed(() => {

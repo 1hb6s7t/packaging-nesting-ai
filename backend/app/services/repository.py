@@ -39,6 +39,7 @@ PERMISSION_DESCRIPTIONS = {
     "notifications:manage": "Manage notification templates and message dispatch policies",
     "solvers:manage": "Manage solver registry, enablement, and license policies",
     "benchmark:write": "Create and run benchmark cases",
+    "batch:write": "Manage batch artwork ingestion and batch layout planning",
     "ai:use": "Use AI assistant tools",
     "rbac:manage": "Manage users, roles, and permissions",
 }
@@ -50,7 +51,15 @@ ROLE_TEMPLATES = {
     },
     "print_planner": {
         "description": "Plans orders, artwork, sheets, and nesting jobs",
-        "permission_codes": ["orders:write", "artworks:write", "sheets:write", "nesting:write", "rules:manage", "ai:use"],
+        "permission_codes": [
+            "orders:write",
+            "artworks:write",
+            "batch:write",
+            "sheets:write",
+            "nesting:write",
+            "rules:manage",
+            "ai:use",
+        ],
     },
     "production_operator": {
         "description": "Runs production tasks and exports approved solutions",
@@ -74,7 +83,14 @@ ROLE_TEMPLATES = {
     },
     "benchmark_engineer": {
         "description": "Runs solver benchmarks and monitors task execution",
-        "permission_codes": ["benchmark:write", "solvers:manage", "nesting:write", "tasks:manage", "audit:read"],
+        "permission_codes": [
+            "benchmark:write",
+            "batch:write",
+            "solvers:manage",
+            "nesting:write",
+            "tasks:manage",
+            "audit:read",
+        ],
     },
 }
 
@@ -223,6 +239,7 @@ def seed_rbac(db: Session, hash_password_func) -> None:
             "benchmark_engineer",
             "integration_manager",
             "operations_manager",
+            "print_planner",
             "production_operator",
         }:
             grant_role_permissions(db, role.id, template["permission_codes"], permissions_by_code)
@@ -2689,6 +2706,132 @@ def list_solution_approvals(db: Session, solution_id: str) -> list[schemas.Solut
     return [solution_approval_from_row(row) for row in rows]
 
 
+def create_production_plan_approval_request(
+    db: Session,
+    plan: schemas.ProductionPlanRead,
+    requested_by: str,
+    request_note: str | None = None,
+) -> schemas.ProductionPlanApprovalRead:
+    pending = db.scalar(
+        select(dbm.ProductionPlanApproval)
+        .where(dbm.ProductionPlanApproval.plan_id == plan.plan_id, dbm.ProductionPlanApproval.status == "pending")
+        .order_by(dbm.ProductionPlanApproval.created_at.desc())
+    )
+    if pending:
+        return production_plan_approval_from_row(pending)
+    row = dbm.ProductionPlanApproval(
+        plan_id=plan.plan_id,
+        requested_by=requested_by,
+        status="pending",
+        request_note=request_note,
+        snapshot=plan.model_dump(mode="json"),
+    )
+    db.add(row)
+    db.commit()
+    return production_plan_approval_from_row(row)
+
+
+def decide_production_plan_approval(
+    db: Session,
+    plan_id: str,
+    decision: str,
+    decided_by: str,
+    decision_note: str | None = None,
+) -> schemas.ProductionPlanApprovalRead:
+    row = db.scalar(
+        select(dbm.ProductionPlanApproval)
+        .where(dbm.ProductionPlanApproval.plan_id == plan_id, dbm.ProductionPlanApproval.status == "pending")
+        .order_by(dbm.ProductionPlanApproval.created_at.desc())
+    )
+    if row is None:
+        raise ValueError("pending production plan approval request not found")
+    row.status = decision
+    row.decided_by = decided_by
+    row.decision_note = decision_note
+    db.commit()
+    return production_plan_approval_from_row(row)
+
+
+def list_production_plan_approvals(db: Session, plan_id: str) -> list[schemas.ProductionPlanApprovalRead]:
+    rows = db.scalars(
+        select(dbm.ProductionPlanApproval)
+        .where(dbm.ProductionPlanApproval.plan_id == plan_id)
+        .order_by(dbm.ProductionPlanApproval.created_at.desc())
+    )
+    return [production_plan_approval_from_row(row) for row in rows]
+
+
+def set_production_plan_status(db: Session, plan_id: str, status: str) -> None:
+    row = db.get(dbm.ProductionPlan, plan_id)
+    if row is None:
+        raise ValueError("production plan not found")
+    row.status = status
+    db.commit()
+
+
+def create_production_plan_export_record(
+    db: Session,
+    *,
+    export_id: str,
+    plan_id: str,
+    export_type: str,
+    storage_key: str,
+    checksum: str,
+    storage_backend: str | None = None,
+    storage_object_key: str | None = None,
+    storage_version_id: str | None = None,
+    storage_etag: str | None = None,
+    storage_size_bytes: int | None = None,
+) -> schemas.ProductionPlanExportRead:
+    existing_exports = list(
+        db.scalars(
+            select(dbm.ProductionPlanExport).where(
+                dbm.ProductionPlanExport.plan_id == plan_id,
+                dbm.ProductionPlanExport.export_type == export_type,
+            )
+        )
+    )
+    version = max((row.version for row in existing_exports), default=0) + 1
+    row = dbm.ProductionPlanExport(
+        id=export_id,
+        plan_id=plan_id,
+        export_type=export_type,
+        version=version,
+        lifecycle_status="active",
+        storage_key=storage_key,
+        checksum=checksum,
+        storage_backend=storage_backend,
+        storage_object_key=storage_object_key,
+        storage_version_id=storage_version_id,
+        storage_etag=storage_etag,
+        storage_size_bytes=storage_size_bytes,
+    )
+    for existing in existing_exports:
+        if existing.lifecycle_status == "active":
+            existing.lifecycle_status = "superseded"
+    db.add(row)
+    db.commit()
+    return production_plan_export_from_row(row)
+
+
+def list_production_plan_exports(db: Session, plan_id: str) -> list[schemas.ProductionPlanExportRead]:
+    rows = db.scalars(
+        select(dbm.ProductionPlanExport)
+        .where(dbm.ProductionPlanExport.plan_id == plan_id)
+        .order_by(
+            dbm.ProductionPlanExport.export_type,
+            dbm.ProductionPlanExport.version.desc(),
+            dbm.ProductionPlanExport.created_at.desc(),
+        )
+    )
+    return [production_plan_export_from_row(row) for row in rows]
+
+
+def get_production_plan_export(db: Session, export_id: str) -> schemas.ProductionPlanExportRead | None:
+    row = db.get(dbm.ProductionPlanExport, export_id)
+    return production_plan_export_from_row(row) if row else None
+
+
 def create_solution_export_record(
     db: Session,
     *,
@@ -3844,6 +3987,41 @@ def benchmark_run_from_row(row: dbm.BenchmarkRun) -> schemas.BenchmarkRunResult:
         metrics=row.metrics_json or {},
         failure_reason=row.failure_reason,
         created_at=row.created_at.isoformat(),
+    )
+
+
+def production_plan_approval_from_row(row: dbm.ProductionPlanApproval) -> schemas.ProductionPlanApprovalRead:
+    return schemas.ProductionPlanApprovalRead(
+        id=row.id,
+        plan_id=row.plan_id,
+        requested_by=row.requested_by,
+        decided_by=row.decided_by,
+        status=row.status,
+        request_note=row.request_note,
+        decision_note=row.decision_note,
+        snapshot=row.snapshot,
+        created_at=row.created_at.isoformat(),
+        updated_at=row.updated_at.isoformat(),
+    )
+
+
+def production_plan_export_from_row(row: dbm.ProductionPlanExport) -> schemas.ProductionPlanExportRead:
+    return schemas.ProductionPlanExportRead(
+        id=row.id,
+        plan_id=row.plan_id,
+        export_type=row.export_type,
+        version=row.version,
+        lifecycle_status=row.lifecycle_status,
+        storage_key=row.storage_key,
+        checksum=row.checksum,
+        storage_backend=row.storage_backend,
+        storage_object_key=row.storage_object_key,
+        storage_version_id=row.storage_version_id,
+        storage_etag=row.storage_etag,
+        storage_size_bytes=row.storage_size_bytes,
+        download_path=f"/batch-layout/plans/exports/{row.id}/download",
+        created_at=row.created_at.isoformat(),
+        updated_at=row.updated_at.isoformat(),
     )
 
 

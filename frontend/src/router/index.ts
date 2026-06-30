@@ -5,6 +5,7 @@ const Dashboard = () => import("../views/Dashboard.vue");
 const Orders = () => import("../views/Orders.vue");
 const Artworks = () => import("../views/Artworks.vue");
 const ArtworkPreflight = () => import("../views/ArtworkPreflight.vue");
+const BatchWorkbench = () => import("../views/BatchWorkbench.vue");
 const Sheets = () => import("../views/Sheets.vue");
 const NestingJobs = () => import("../views/NestingJobs.vue");
 const RunMonitor = () => import("../views/RunMonitor.vue");
@@ -62,6 +63,7 @@ export const routes = [
   { path: "/orders", name: "orders", component: Orders, meta: { label: "订单池", permissions: ["orders:write"] } },
   { path: "/artworks", name: "artworks", component: Artworks, meta: { label: "版图上传", permissions: ["artworks:write"] } },
   { path: "/artworks/preflight", name: "preflight", component: ArtworkPreflight, meta: { label: "版图预检", public: true } },
+  { path: "/batch", name: "batch-workbench", component: BatchWorkbench, meta: { label: "批量工作台", permissions: ["batch:write"] } },
   { path: "/sheets", name: "sheets", component: Sheets, meta: { label: "纸张规格", permissions: ["sheets:write"] } },
   { path: "/nesting/jobs", name: "nesting-jobs", component: NestingJobs, meta: { label: "拼版任务", permissions: ["nesting:write"] } },
   { path: "/nesting/monitor", name: "run-monitor", component: RunMonitor, meta: { label: "运行监控", permissions: ["audit:read"] } },
@@ -74,8 +76,13 @@ export const routes = [
       anyPermissions: ["solutions:write", "solutions:approve", "solutions:export", "solutions:archive"]
     }
   },
-  { path: "/solutions/compare", name: "compare", component: SolutionCompare, meta: { label: "方案对比" } },
-  { path: "/reports", name: "reports", component: Reports, meta: { label: "成本报告" } },
+  {
+    path: "/solutions/compare",
+    name: "compare",
+    component: SolutionCompare,
+    meta: { label: "方案对比", anyPermissions: ["solutions:write", "solutions:approve", "solutions:export"] }
+  },
+  { path: "/reports", name: "reports", component: Reports, meta: { label: "成本报告", anyPermissions: ["audit:read", "solutions:write"] } },
   { path: "/ai", name: "ai", component: AiAssistant, meta: { label: "AI 助手", permissions: ["ai:use"] } },
   { path: "/rules", name: "rules", component: Rules, meta: { label: "规则配置", permissions: ["rules:manage"] } },
   { path: "/solvers", name: "solvers", component: SolverConfig, meta: { label: "Solver 配置", permissions: ["solvers:manage"] } },
@@ -83,7 +90,7 @@ export const routes = [
   { path: "/conversion-logs", name: "conversion-logs", component: ConversionLogs, meta: { label: "转换日志", permissions: ["artworks:write"] } },
   { path: "/integrations", name: "integrations", component: Integrations, meta: { label: "系统集成", permissions: ["integrations:write"] } },
   { path: "/operation-logs", name: "operation-logs", component: OperationLogs, meta: { label: "操作日志", permissions: ["audit:read"] } },
-  { path: "/notifications", name: "notifications", component: Notifications, meta: { label: "通知中心" } },
+  { path: "/notifications", name: "notifications", component: Notifications, meta: { label: "通知中心", anyPermissions: ["notifications:manage", "audit:read"] } },
   { path: "/permissions", name: "permissions", component: Permissions, meta: { label: "权限管理", permissions: ["rbac:manage"] } }
 ] satisfies RouteRecordRaw[];
 

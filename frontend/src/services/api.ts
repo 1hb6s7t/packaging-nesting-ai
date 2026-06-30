@@ -120,3 +120,225 @@ function formatApiValidationIssue(issue: unknown): string {
 export function getApiBase(): string {
   return API_BASE;
 }
+
+export type ArtworkFeature = {
+  bbox?: { width: number; height: number; min_x: number; min_y: number; max_x: number; max_y: number } | null;
+  area: number;
+  area_ratio: number;
+  aspect_ratio: number;
+  hole_count: number;
+  concavity: number;
+  parse_confidence: number;
+  needs_manual_review: boolean;
+  warnings: string[];
+  metadata: Record<string, unknown>;
+};
+
+export type BatchArtworkItem = {
+  item_id: string;
+  batch_id: string;
+  artwork_id?: string | null;
+  filename: string;
+  source_format: string;
+  status: string;
+  quantity: number;
+  classification?: string | null;
+  feature?: ArtworkFeature | null;
+  parse_error?: string | null;
+  preflight_report?: {
+    requires_conversion: boolean;
+    requires_manual_review: boolean;
+    can_parse_directly: boolean;
+    warnings: string[];
+  } | null;
+};
+
+export type BatchUpload = {
+  batch_id: string;
+  source_name?: string | null;
+  status: string;
+  item_count: number;
+  uploaded_count: number;
+  preflighted_count: number;
+  parsed_count: number;
+  conversion_required_count: number;
+  manual_review_count: number;
+  failed_count: number;
+};
+
+export type BatchArtworkSummary = {
+  batch: BatchUpload;
+  items: BatchArtworkItem[];
+  class_counts: Record<string, number>;
+  format_counts: Record<string, number>;
+  status_counts: Record<string, number>;
+};
+
+export type SheetCutVariant = {
+  variant_id: string;
+  parent_id: string;
+  code: string;
+  kind: string;
+  width: number;
+  height: number;
+  waste_rate: number;
+  is_enabled: boolean;
+};
+
+export type BatchLayoutJob = {
+  job_id: string;
+  batch_id: string;
+  status: string;
+  moq_per_item: number;
+  top_k: number;
+  cut_variants: SheetCutVariant[];
+};
+
+export type BatchLayoutGroup = {
+  group_id: string;
+  job_id: string;
+  compatibility_key: string;
+  item_ids: string[];
+  material?: string | null;
+  thickness?: string | null;
+  print_method?: string | null;
+  spot_color?: string | null;
+  stats: Record<string, unknown>;
+};
+
+export type ProductionPattern = {
+  pattern_id: string;
+  pattern_type: string;
+  cut_variant_id?: string | null;
+  units_per_sheet: number;
+  required_sheets: number;
+  total_units: number;
+  utilization_rate: number;
+  quantity_fulfillment_rate: number;
+  hard_rule_pass: boolean;
+};
+
+export type ProductionPlan = {
+  plan_id: string;
+  job_id: string;
+  rank: number;
+  intent: string;
+  status: string;
+  utilization_rate: number;
+  risk_score: number;
+  runtime_score: number;
+  diversity_score: number;
+  total_sheets_used: number;
+  quantity_fulfillment_rate: number;
+  hard_rule_pass: boolean;
+  export_ok: boolean;
+  validator_report: Record<string, unknown>;
+  audit_manifest: Record<string, unknown>;
+  patterns: ProductionPattern[];
+};
+
+export type ProductionPlanApproval = {
+  id: string;
+  plan_id: string;
+  requested_by: string;
+  decided_by?: string | null;
+  status: "pending" | "approved" | "rejected";
+  request_note?: string | null;
+  decision_note?: string | null;
+  snapshot: Record<string, unknown>;
+};
+
+export type BatchLayoutRunResult = {
+  job: BatchLayoutJob;
+  groups: BatchLayoutGroup[];
+  plans: ProductionPlan[];
+  summary: Record<string, unknown>;
+};
+
+export type BatchBenchmarkRun = {
+  run_id: string;
+  benchmark_type: string;
+  status: string;
+  file_count: number;
+  p95_runtime_ms?: number | null;
+  hard_rule_pass_rate: number;
+  quantity_fulfillment_rate: number;
+  topk_legal_rate: number;
+  avg_case_score: number;
+  metrics: Record<string, unknown>;
+};
+
+export async function uploadBatchArtworks(files: File[], sourceName: string): Promise<BatchArtworkSummary> {
+  const form = new FormData();
+  for (const file of files) {
+    form.append("files", file);
+  }
+  if (sourceName) {
+    form.append("source_name", sourceName);
+  }
+  form.append("metadata_json", JSON.stringify({ default_quantity: 1000 }));
+  return apiRequest<BatchArtworkSummary>("/batch-artworks/upload", { method: "POST", body: form });
+}
+
+export function preflightBatchArtworks(batchId: string): Promise<BatchArtworkSummary> {
+  return apiRequest<BatchArtworkSummary>(`/batch-artworks/${encodeURIComponent(batchId)}/preflight`, { method: "POST" });
+}
+
+export function parseBatchArtworks(batchId: string): Promise<BatchArtworkSummary> {
+  return apiRequest<BatchArtworkSummary>(`/batch-artworks/${encodeURIComponent(batchId)}/parse`, { method: "POST" });
+}
+
+export function createBatchLayoutJob(batchId: string): Promise<BatchLayoutJob> {
+  return apiRequest<BatchLayoutJob>("/batch-layout/jobs", {
+    method: "POST",
+    body: JSON.stringify({ batch_id: batchId, moq_per_item: 1000, top_k: 3 })
+  });
+}
+
+export function runBatchLayoutJob(jobId: string): Promise<BatchLayoutRunResult> {
+  return apiRequest<BatchLayoutRunResult>(`/batch-layout/jobs/${encodeURIComponent(jobId)}/run`, { method: "POST" });
+}
+
+export function listBatchLayoutPlans(jobId: string): Promise<ProductionPlan[]> {
+  return apiRequest<ProductionPlan[]>(`/batch-layout/jobs/${encodeURIComponent(jobId)}/plans`);
+}
+
+export function previewBatchPlan(planId: string): Promise<string> {
+  return apiRequest<string>(`/batch-layout/plans/${encodeURIComponent(planId)}/preview`);
+}
+
+export function requestBatchPlanApproval(planId: string): Promise<ProductionPlanApproval> {
+  return apiRequest<ProductionPlanApproval>(`/batch-layout/plans/${encodeURIComponent(planId)}/approval/request`, {
+    method: "POST",
+    body: JSON.stringify({ note: "Ready for production plan review" })
+  });
+}
+
+export function approveBatchPlan(planId: string): Promise<ProductionPlanApproval> {
+  return apiRequest<ProductionPlanApproval>(`/batch-layout/plans/${encodeURIComponent(planId)}/approval/decision`, {
+    method: "POST",
+    body: JSON.stringify({
+      decision: "approved",
+      note: "Approved for production plan export",
+      confirmation: `APPROVE PLAN ${planId}`
+    })
+  });
+}
+
+export function exportBatchPlan(planId: string): Promise<Record<string, unknown>> {
+  return apiRequest<Record<string, unknown>>(`/batch-layout/plans/${encodeURIComponent(planId)}/export`, {
+    method: "POST",
+    body: JSON.stringify({ confirmation: `EXPORT PLAN ${planId}` })
+  });
+}
+
+export function runEnterpriseStress787(): Promise<BatchBenchmarkRun> {
+  return apiRequest<BatchBenchmarkRun>("/benchmarks/run/stress-787", { method: "POST", body: JSON.stringify({}) });
+}
+
+export function runEnterpriseBatch1500(fileCount = 1500): Promise<BatchBenchmarkRun> {
+  return apiRequest<BatchBenchmarkRun>("/benchmarks/run/batch-1500", {
+    method: "POST",
+    body: JSON.stringify({ file_count: fileCount })
+  });
+}

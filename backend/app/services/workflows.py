@@ -1,20 +1,34 @@
 from __future__ import annotations
 
+import json
+import hashlib
 import time
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal, init_db
-from app.domain.schemas import NestingSolution, SolutionExportRead, SolutionList, SolverName, WorkTaskRead
+from app.domain.schemas import (
+    NestingSolution,
+    ProductionPlanExportRead,
+    ProductionPlanRead,
+    SolutionExportRead,
+    SolutionList,
+    SolverName,
+    WorkTaskRead,
+)
 from app.services import repository
 from app.services.benchmarks import run_and_record_benchmark
+from app.services.batch_layout import BatchLayoutService
 from app.services.exports import create_solution_export
 from app.services.solvers import SolverOrchestrator
+from app.services.storage import write_text
 from app.services.store import store
 
 
 orchestrator = SolverOrchestrator()
+batch_layout_service = BatchLayoutService()
 
 
 class WorkTaskCancelled(Exception):
@@ -137,6 +151,65 @@ def export_solution(
     return export
 
 
+def export_production_plan(
+    db: Session,
+    plan_id: str,
+    actor_id: str | None = None,
+    task_id: str | None = None,
+) -> ProductionPlanExportRead:
+    _raise_if_cancelled(db, task_id)
+    plan = batch_layout_service.get_plan(db, plan_id)
+    if plan is None:
+        raise ValueError("production plan not found")
+    ensure_approved_production_plan(plan)
+    _raise_if_cancelled(db, task_id)
+    approvals = [approval.model_dump(mode="json") for approval in repository.list_production_plan_approvals(db, plan_id)]
+    export_id = f"pexp_{uuid4().hex[:16]}"
+    manifest = {
+        "schema_version": 1,
+        "export_id": export_id,
+        "plan": plan.model_dump(mode="json"),
+        "approvals": approvals,
+        "validator_report": plan.validator_report,
+        "audit_manifest": plan.audit_manifest,
+        "coordinates_source": "deterministic_system_plan_not_ai_generated",
+    }
+    text = json.dumps(manifest, ensure_ascii=False, indent=2)
+    checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    stored = write_text(
+        f"exports/production-plans/{plan_id}/{export_id}.json",
+        text,
+        content_type="application/json; charset=utf-8",
+    )
+    export = repository.create_production_plan_export_record(
+        db,
+        export_id=export_id,
+        plan_id=plan_id,
+        export_type="json",
+        storage_key=stored.storage_key,
+        checksum=checksum,
+        storage_backend=stored.backend,
+        storage_object_key=stored.object_key,
+        storage_version_id=stored.version_id,
+        storage_etag=stored.etag,
+        storage_size_bytes=stored.size,
+    )
+    repository.log_operation(
+        db,
+        action="production_plan.export_json",
+        target_type="production_plan",
+        target_id=plan_id,
+        actor_id=actor_id,
+        payload={
+            "export_id": export.id,
+            "version": export.version,
+            "storage_key": export.storage_key,
+            "checksum": export.checksum,
+        },
+    )
+    return export
+
+
 def archive_expired_solution_exports(
     db: Session,
     *,
@@ -177,6 +250,34 @@ def ensure_approved_solution(solution: NestingSolution) -> None:
     ensure_valid_solution(solution)
     if solution.status != "approved":
         raise ValueError("solution must be approved before production export")
+
+
+def ensure_valid_production_plan(plan: ProductionPlanRead) -> None:
+    if not plan.hard_rule_pass or not plan.export_ok:
+        raise ValueError("production plan must pass Validator and export gates first")
+    veto = plan.validator_report.get("veto") if isinstance(plan.validator_report, dict) else None
+    if isinstance(veto, dict):
+        required = [
+            "no_overlap",
+            "inside_printable_area",
+            "gripper_clear",
+            "min_gap_ok",
+            "rotation_ok",
+            "material_rule_ok",
+            "export_ok",
+        ]
+        failed = [name for name in required if veto.get(name) is not True]
+        quantity_rate = float(veto.get("quantity_fulfillment_rate", plan.quantity_fulfillment_rate) or 0)
+        if failed or quantity_rate < 1:
+            raise ValueError("production plan hard constraints are not fully satisfied")
+    if any(not pattern.hard_rule_pass for pattern in plan.patterns):
+        raise ValueError("all production patterns must pass Validator before approval")
+
+
+def ensure_approved_production_plan(plan: ProductionPlanRead) -> None:
+    ensure_valid_production_plan(plan)
+    if plan.status != "approved":
+        raise ValueError("production plan must be approved before production export")
 
 
 def execute_work_task(task_id: str) -> WorkTaskRead:

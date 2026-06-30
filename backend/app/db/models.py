@@ -215,6 +215,58 @@ class FilePreflightReport(Base, TimestampMixin):
     report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
+class BatchUpload(Base, TimestampMixin):
+    __tablename__ = "batch_upload"
+    __table_args__ = (
+        Index("ix_batch_upload_status_created_at", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("batch"))
+    source_name: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(40), default="uploaded", nullable=False)
+    item_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    uploaded_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    preflighted_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    parsed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    conversion_required_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    manual_review_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class BatchArtworkItem(Base, TimestampMixin):
+    __tablename__ = "batch_artwork_item"
+    __table_args__ = (
+        Index("ix_batch_artwork_item_batch_status", "batch_id", "status"),
+        Index("ix_batch_artwork_item_batch_classification", "batch_id", "classification"),
+        Index("ix_batch_artwork_item_compatibility", "material", "thickness", "print_method", "spot_color"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("bitem"))
+    batch_id: Mapped[str] = mapped_column(ForeignKey("batch_upload.id"), nullable=False)
+    artwork_file_id: Mapped[str | None] = mapped_column(ForeignKey("artwork_file.id"))
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(120))
+    checksum: Mapped[str | None] = mapped_column(String(128))
+    source_format: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="uploaded", nullable=False)
+    order_id: Mapped[str | None] = mapped_column(String(120))
+    quantity: Mapped[int] = mapped_column(Integer, default=1000, nullable=False)
+    material: Mapped[str | None] = mapped_column(String(120))
+    thickness: Mapped[str | None] = mapped_column(String(80))
+    print_method: Mapped[str | None] = mapped_column(String(80))
+    spot_color: Mapped[str | None] = mapped_column(String(120))
+    due_date: Mapped[str | None] = mapped_column(String(40))
+    category: Mapped[str | None] = mapped_column(String(120))
+    customer_id: Mapped[str | None] = mapped_column(String(120))
+    preflight_report_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    feature_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    classification: Mapped[str | None] = mapped_column(String(40))
+    parse_error: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
 class ShapeLayer(Base, TimestampMixin):
     __tablename__ = "shape_layer"
 
@@ -261,6 +313,177 @@ class SheetSpec(Base, TimestampMixin):
     material: Mapped[str] = mapped_column(String(120), nullable=False)
     thickness: Mapped[str] = mapped_column(String(80), nullable=False)
     cost_per_sheet: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
+class SheetParentSpec(Base, TimestampMixin):
+    __tablename__ = "sheet_parent_spec"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("parent"))
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    width_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    height_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    material: Mapped[str] = mapped_column(String(120), nullable=False)
+    thickness: Mapped[str] = mapped_column(String(80), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class SheetCutVariant(Base, TimestampMixin):
+    __tablename__ = "sheet_cut_variant"
+    __table_args__ = (
+        Index("ix_sheet_cut_variant_parent_kind", "parent_spec_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("cut"))
+    parent_spec_id: Mapped[str] = mapped_column(ForeignKey("sheet_parent_spec.id"), nullable=False)
+    variant_code: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    width_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    height_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    cuts_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    waste_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class BatchLayoutJob(Base, TimestampMixin):
+    __tablename__ = "batch_layout_job"
+    __table_args__ = (
+        Index("ix_batch_layout_job_batch_status", "batch_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("bljob"))
+    batch_id: Mapped[str] = mapped_column(ForeignKey("batch_upload.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="created", nullable=False)
+    moq_per_item: Mapped[int] = mapped_column(Integer, default=1000, nullable=False)
+    top_k: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    sheet_parent_spec_id: Mapped[str] = mapped_column(ForeignKey("sheet_parent_spec.id"), nullable=False)
+    params_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    audit_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class BatchLayoutGroup(Base, TimestampMixin):
+    __tablename__ = "batch_layout_group"
+    __table_args__ = (
+        Index("ix_batch_layout_group_job_key", "job_id", "compatibility_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("blgrp"))
+    job_id: Mapped[str] = mapped_column(ForeignKey("batch_layout_job.id"), nullable=False)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("batch_upload.id"), nullable=False)
+    compatibility_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    material: Mapped[str | None] = mapped_column(String(120))
+    thickness: Mapped[str | None] = mapped_column(String(80))
+    print_method: Mapped[str | None] = mapped_column(String(80))
+    spot_color: Mapped[str | None] = mapped_column(String(120))
+    due_date: Mapped[str | None] = mapped_column(String(40))
+    category: Mapped[str | None] = mapped_column(String(120))
+    customer_id: Mapped[str | None] = mapped_column(String(120))
+    item_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ProductionPattern(Base, TimestampMixin):
+    __tablename__ = "production_pattern"
+    __table_args__ = (
+        Index("ix_production_pattern_job_group", "job_id", "group_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("pat"))
+    job_id: Mapped[str] = mapped_column(ForeignKey("batch_layout_job.id"), nullable=False)
+    group_id: Mapped[str | None] = mapped_column(ForeignKey("batch_layout_group.id"))
+    cut_variant_id: Mapped[str | None] = mapped_column(ForeignKey("sheet_cut_variant.id"))
+    pattern_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    units_per_sheet: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    required_sheets: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    utilization_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    quantity_fulfillment_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    hard_rule_pass: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    validator_report_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ProductionPlan(Base, TimestampMixin):
+    __tablename__ = "production_plan"
+    __table_args__ = (
+        Index("ix_production_plan_job_rank", "job_id", "rank"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("plan"))
+    job_id: Mapped[str] = mapped_column(ForeignKey("batch_layout_job.id"), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="candidate", nullable=False)
+    utilization_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    risk_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    runtime_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    diversity_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    total_sheets_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    quantity_fulfillment_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    hard_rule_pass: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    export_ok: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    validator_report_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    audit_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ProductionPlanApproval(Base, TimestampMixin):
+    __tablename__ = "production_plan_approval"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("pappr"))
+    plan_id: Mapped[str] = mapped_column(ForeignKey("production_plan.id"), nullable=False)
+    requested_by: Mapped[str] = mapped_column(ForeignKey("user_account.id"), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("user_account.id"))
+    status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False)
+    request_note: Mapped[str | None] = mapped_column(Text)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ProductionPlanExport(Base, TimestampMixin):
+    __tablename__ = "production_plan_export"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("pexp"))
+    plan_id: Mapped[str] = mapped_column(ForeignKey("production_plan.id"), nullable=False)
+    export_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(String(40), default="active", nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    checksum: Mapped[str | None] = mapped_column(String(128))
+    storage_backend: Mapped[str | None] = mapped_column(String(40))
+    storage_object_key: Mapped[str | None] = mapped_column(String(500))
+    storage_version_id: Mapped[str | None] = mapped_column(String(255))
+    storage_etag: Mapped[str | None] = mapped_column(String(255))
+    storage_size_bytes: Mapped[int | None] = mapped_column(Integer)
+
+
+class ProductionPlanPattern(Base, TimestampMixin):
+    __tablename__ = "production_plan_pattern"
+    __table_args__ = (
+        Index("ix_production_plan_pattern_plan_sequence", "plan_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("ppat"))
+    plan_id: Mapped[str] = mapped_column(ForeignKey("production_plan.id"), nullable=False)
+    pattern_id: Mapped[str] = mapped_column(ForeignKey("production_pattern.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sheets_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    produced_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class BatchBenchmarkRun(Base, TimestampMixin):
+    __tablename__ = "batch_benchmark_run"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("bbench"))
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("batch_layout_job.id"))
+    benchmark_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="running", nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    p95_runtime_ms: Mapped[int | None] = mapped_column(Integer)
+    peak_rss_mb: Mapped[float | None] = mapped_column(Float)
+    hard_rule_pass_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    quantity_fulfillment_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    topk_legal_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    avg_case_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class MaterialSpec(Base, TimestampMixin):

@@ -10,6 +10,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 Point = tuple[float, float]
 MessageChannel = Literal["in_app", "webhook", "email"]
 PlanningMode = Literal["single_sheet", "pattern", "expanded"]
+ArtworkBatchStatus = Literal["uploaded", "preflighted", "parsed", "completed", "failed"]
+BatchArtworkItemStatus = Literal[
+    "uploaded",
+    "preflighted",
+    "parsed",
+    "conversion_required",
+    "manual_review",
+    "failed",
+]
+ArtworkClass = Literal["FULL_SHEET", "ANCHOR", "FILLER", "OVERSIZE", "MULTI_PAGE"]
+CutVariantKind = Literal["parent", "rotated_parent", "half", "third", "quarter", "custom"]
+BatchLayoutJobStatus = Literal["created", "running", "completed", "failed"]
+ProductionPlanIntent = Literal["highest_utilization", "balanced_risk", "fastest_production"]
 
 
 class SolverName(str, Enum):
@@ -123,6 +136,257 @@ class PreflightReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     detected_layers: list[str] = Field(default_factory=list)
     dimensions_mm: dict[str, float] | None = None
+
+
+class ArtworkFeature(BaseModel):
+    bbox: BBox | None = None
+    area: float = Field(default=0, ge=0)
+    area_ratio: float = Field(default=0, ge=0)
+    aspect_ratio: float = Field(default=0, ge=0)
+    hole_count: int = Field(default=0, ge=0)
+    concavity: float = Field(default=0, ge=0)
+    parse_confidence: float = Field(default=0, ge=0, le=1)
+    needs_manual_review: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchArtworkUploadSummary(BaseModel):
+    batch_id: str
+    item_count: int
+    uploaded_count: int
+    preflighted_count: int = 0
+    parsed_count: int = 0
+    conversion_required_count: int = 0
+    manual_review_count: int = 0
+    failed_count: int = 0
+
+
+class BatchUploadRead(BaseModel):
+    batch_id: str
+    source_name: str | None = None
+    status: ArtworkBatchStatus = "uploaded"
+    item_count: int = 0
+    uploaded_count: int = 0
+    preflighted_count: int = 0
+    parsed_count: int = 0
+    conversion_required_count: int = 0
+    manual_review_count: int = 0
+    failed_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BatchArtworkItemRead(BaseModel):
+    item_id: str
+    batch_id: str
+    artwork_id: str | None = None
+    filename: str
+    content_type: str | None = None
+    checksum: str | None = None
+    source_format: str = "unknown"
+    status: BatchArtworkItemStatus = "uploaded"
+    order_id: str | None = None
+    quantity: int = Field(default=1000, ge=1)
+    material: str | None = None
+    thickness: str | None = None
+    print_method: str | None = None
+    spot_color: str | None = None
+    due_date: date | None = None
+    category: str | None = None
+    customer_id: str | None = None
+    preflight_report: PreflightReport | None = None
+    feature: ArtworkFeature | None = None
+    classification: ArtworkClass | None = None
+    parse_error: str | None = None
+    retry_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BatchArtworkSummary(BaseModel):
+    batch: BatchUploadRead
+    items: list[BatchArtworkItemRead] = Field(default_factory=list)
+    class_counts: dict[str, int] = Field(default_factory=dict)
+    format_counts: dict[str, int] = Field(default_factory=dict)
+    status_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class SheetParentSpec(BaseModel):
+    parent_id: str = "PARENT_787_1092"
+    name: str = "787x1092 parent sheet"
+    width: float = Field(default=787, gt=0)
+    height: float = Field(default=1092, gt=0)
+    material: str = "white_card"
+    thickness: str = "350gsm"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SheetCutVariant(BaseModel):
+    variant_id: str
+    parent_id: str
+    code: str
+    kind: CutVariantKind
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    cuts: dict[str, Any] = Field(default_factory=dict)
+    waste_rate: float = Field(default=0, ge=0)
+    is_enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchLayoutJobCreate(BaseModel):
+    batch_id: str
+    sheet_parent: SheetParentSpec = Field(default_factory=SheetParentSpec)
+    moq_per_item: int = Field(default=1000, ge=1)
+    top_k: int = Field(default=3, ge=1, le=10)
+    custom_cut_variants: list[SheetCutVariant] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchLayoutGroupRead(BaseModel):
+    group_id: str
+    job_id: str
+    batch_id: str
+    compatibility_key: str
+    item_ids: list[str] = Field(default_factory=list)
+    material: str | None = None
+    thickness: str | None = None
+    print_method: str | None = None
+    spot_color: str | None = None
+    due_date: date | None = None
+    category: str | None = None
+    customer_id: str | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProductionPatternRead(BaseModel):
+    pattern_id: str
+    job_id: str
+    group_id: str | None = None
+    cut_variant_id: str | None = None
+    pattern_type: str
+    units_per_sheet: int = 0
+    required_sheets: int = 0
+    total_units: int = 0
+    utilization_rate: float = 0
+    quantity_fulfillment_rate: float = 0
+    hard_rule_pass: bool = False
+    validator_report: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProductionPlanPatternRead(BaseModel):
+    id: str
+    plan_id: str
+    pattern_id: str
+    sequence: int = 0
+    sheets_used: int = 0
+    produced_units: int = 0
+
+
+class ProductionPlanRead(BaseModel):
+    plan_id: str
+    job_id: str
+    rank: int
+    intent: ProductionPlanIntent
+    status: Literal[
+        "candidate",
+        "validator_passed",
+        "validator_failed",
+        "pending_approval",
+        "approved",
+        "rejected",
+        "exported",
+    ] = "candidate"
+    utilization_rate: float = 0
+    risk_score: float = 0
+    runtime_score: float = 0
+    diversity_score: float = 0
+    total_sheets_used: int = 0
+    quantity_fulfillment_rate: float = 0
+    hard_rule_pass: bool = False
+    export_ok: bool = False
+    validator_report: dict[str, Any] = Field(default_factory=dict)
+    audit_manifest: dict[str, Any] = Field(default_factory=dict)
+    patterns: list[ProductionPatternRead] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProductionPlanApprovalRead(BaseModel):
+    id: str
+    plan_id: str
+    requested_by: str
+    decided_by: str | None = None
+    status: Literal["pending", "approved", "rejected"]
+    request_note: str | None = None
+    decision_note: str | None = None
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class ProductionPlanExportRead(BaseModel):
+    id: str
+    plan_id: str
+    export_type: Literal["json"] = "json"
+    version: int = 1
+    lifecycle_status: Literal["active", "superseded", "archived"] = "active"
+    storage_key: str
+    checksum: str | None = None
+    storage_backend: str | None = None
+    storage_object_key: str | None = None
+    storage_version_id: str | None = None
+    storage_etag: str | None = None
+    storage_size_bytes: int | None = None
+    status: str = "ready"
+    download_path: str
+    created_at: str
+    updated_at: str
+
+
+class BatchLayoutJobRead(BaseModel):
+    job_id: str
+    batch_id: str
+    status: BatchLayoutJobStatus = "created"
+    moq_per_item: int = 1000
+    top_k: int = 3
+    sheet_parent: SheetParentSpec
+    cut_variants: list[SheetCutVariant] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+    audit_manifest: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BatchLayoutRunResult(BaseModel):
+    job: BatchLayoutJobRead
+    groups: list[BatchLayoutGroupRead] = Field(default_factory=list)
+    plans: list[ProductionPlanRead] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchBenchmarkRunRead(BaseModel):
+    run_id: str
+    job_id: str | None = None
+    benchmark_type: str
+    status: Literal["passed", "failed", "running"] = "running"
+    file_count: int = 0
+    p95_runtime_ms: int | None = None
+    peak_rss_mb: float | None = None
+    hard_rule_pass_rate: float = 0
+    quantity_fulfillment_rate: float = 0
+    topk_legal_rate: float = 0
+    avg_case_score: float = 0
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class FileConversionJobRead(BaseModel):
