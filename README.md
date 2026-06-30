@@ -169,7 +169,7 @@ python scripts\solver_governance_audit.py --output artifacts\solver-governance-a
 - API 会接受安全格式的 `X-Request-ID` 或自动生成请求 ID，并在响应头和错误 JSON 的 `request_id` 中回传，同时在 `app.request` 访问日志中记录 request_id、方法、路径、状态码和耗时，便于把客户报错、反向代理日志和后端日志串联起来；未处理异常只返回安全的 `internal server error`
 - RBAC 用户创建和改密会校验密码策略：12-128 字符，并且至少包含一个字母和一个数字
 - `operation_log`、`sync_task`、`writeback_log`、MES/ERP 快照字段、转换作业读取模型、消息模板和通知收件组 metadata 写入/返回前会递归遮蔽 password、token、secret、api key、authorization、webhook_url、URL 密码和敏感 query 等 payload 字段，保留 `*_hash`、`*_tail`、`callback_token_rotated_at` 这类审计摘要
-- 订单、纸张、版图、拼版任务、方案、Solver 运行和审计等业务数据读写接口需要 `Authorization: Bearer <token>`；`/api/health`、`/api/health/ready`、`/api/auth/login`、静态工具 schema 和无状态版图预检可匿名访问；供应商转换回调不使用 Bearer，但必须携带最新 `X-Conversion-Callback-Token`
+- 订单、纸张、版图、拼版任务、方案、Solver 运行、AI 工具 schema 和审计等业务数据读写接口需要 `Authorization: Bearer <token>`；`/api/ai/tools` 还需要 `ai:use` 权限；`/api/health`、`/api/health/ready`、`/api/auth/login` 和无状态版图预检可匿名访问；供应商转换回调不使用 Bearer，但必须携带最新 `X-Conversion-Callback-Token`
 - 前端菜单会按当前用户权限显示可访问模块，方案审批/导出/归档、任务维护/取消/重试等敏感操作按钮也会按细粒度权限禁用；直接打开无权限模块会回到 Dashboard，未登录直接打开受保护模块会跳转登录页
 - 前端检测到已保存 Bearer Token 被后端返回 `401` 时会清理本地会话并跳转登录页，登录成功后回到原目标页
 - 健康检查：`GET /api/health` 是轻量 liveness；`GET /api/health/ready` 会检查数据库连接、SQLAlchemy 元数据表/列和 Storage Adapter 可用性，生产/显式迁移模式还会检查 `alembic_version` 是否等于仓库 head，依赖异常时返回 503

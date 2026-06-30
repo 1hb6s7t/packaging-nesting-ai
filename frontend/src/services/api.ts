@@ -145,6 +145,7 @@ export type BatchArtworkItem = {
   classification?: string | null;
   feature?: ArtworkFeature | null;
   parse_error?: string | null;
+  retry_count: number;
   preflight_report?: {
     requires_conversion: boolean;
     requires_manual_review: boolean;
@@ -288,6 +289,13 @@ export function parseBatchArtworks(batchId: string): Promise<BatchArtworkSummary
   return apiRequest<BatchArtworkSummary>(`/batch-artworks/${encodeURIComponent(batchId)}/parse`, { method: "POST" });
 }
 
+export function retryFailedBatchArtworks(batchId: string, itemIds?: string[]): Promise<BatchArtworkSummary> {
+  return apiRequest<BatchArtworkSummary>(`/batch-artworks/${encodeURIComponent(batchId)}/retry-failed`, {
+    method: "POST",
+    body: JSON.stringify({ item_ids: itemIds && itemIds.length ? itemIds : null })
+  });
+}
+
 export function createBatchLayoutJob(batchId: string): Promise<BatchLayoutJob> {
   return apiRequest<BatchLayoutJob>("/batch-layout/jobs", {
     method: "POST",
@@ -338,6 +346,13 @@ export function runEnterpriseStress787(): Promise<BatchBenchmarkRun> {
 
 export function runEnterpriseBatch1500(fileCount = 1500): Promise<BatchBenchmarkRun> {
   return apiRequest<BatchBenchmarkRun>("/benchmarks/run/batch-1500", {
+    method: "POST",
+    body: JSON.stringify({ file_count: fileCount })
+  });
+}
+
+export function runEnterpriseBatch20000(fileCount = 20000): Promise<BatchBenchmarkRun> {
+  return apiRequest<BatchBenchmarkRun>("/benchmarks/run/batch-20000", {
     method: "POST",
     body: JSON.stringify({ file_count: fileCount })
   });

@@ -27,7 +27,7 @@
 - `/api/operation-logs` 支持 `action`、`target_type`、`target_id`、`actor_id`、`created_from`、`created_to` 和 `limit` 查询参数，操作日志页也提供同样筛选项，用于快速定位安全事件、上线变更和客户回写记录；`operation_log` 已为时间、动作、对象和操作者查询建立索引。
 - 登录失败会写入 `operation_log.action=auth.login_failed`，payload 保留邮箱哈希、客户端地址、失败计数和限流窗口；同一邮箱和客户端在 `LOGIN_RATE_LIMIT_WINDOW_SEC` 内失败达到 `LOGIN_RATE_LIMIT_MAX_FAILURES` 后，登录接口返回 `429` 和 `Retry-After`，并写入 `auth.login_throttled`。
 - 前端收到已登录请求的 `401` 后会清理本地 Token 和用户信息，并跳转登录页；用户重新登录后回到原目标页面。
-- 存储型业务读取也需要 Bearer Token，包括订单、纸张、版图、拼版任务、方案、报告、预览和 Solver 运行日志；匿名访问仅保留给 `/api/health`、`/api/health/ready`、登录、静态 AI 工具 schema 和无状态版图预检。供应商转换回调不使用 Bearer，但必须携带最新 `X-Conversion-Callback-Token`。
+- 存储型业务读取也需要 Bearer Token，包括订单、纸张、版图、拼版任务、方案、报告、预览、AI 工具 schema 和 Solver 运行日志；`/api/ai/tools` 还需要 `ai:use` 权限；匿名访问仅保留给 `/api/health`、`/api/health/ready`、登录和无状态版图预检。供应商转换回调不使用 Bearer，但必须携带最新 `X-Conversion-Callback-Token`。
 - `/api/health/ready` 可匿名用于负载均衡和编排系统 readiness 探测，但只返回数据库、schema、生产迁移 head 和 storage 组件状态，不暴露业务数据。
 - 用户、角色、权限分配和组织字段通过 `/permissions` 页面或 `/api/rbac/*` 接口维护，需要 `rbac:manage` 权限；`org_unit_code` 用于客户部门/产线/岗位组映射。
 - 规则集版本、启用和执行日志通过 `/rules` 页面或 `/api/rules/*` 接口维护，需要 `rules:manage` 权限；订单评分和候选筛选会记录所用规则集、订单、决策、分数和表达式错误。

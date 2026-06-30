@@ -43,7 +43,8 @@ def test_enterprise_batch_1500_endpoint_runs_real_batch_pipeline_stress() -> Non
     assert payload["file_count"] == 25
     assert payload["topk_legal_rate"] == 1
     assert payload["job_id"]
-    assert payload["metrics"]["synthetic"] is False
+    assert payload["metrics"]["synthetic"] is True
+    assert payload["metrics"]["fixture_source"] == "generated_svg_dxf_pdf_placeholders"
     assert payload["metrics"]["pipeline"] == "batch_artwork_to_batch_layout"
     assert payload["metrics"]["sheet_parent"]["width"] == 787
     assert payload["metrics"]["sheet_parent"]["height"] == 1092
@@ -58,6 +59,29 @@ def test_enterprise_batch_1500_endpoint_runs_real_batch_pipeline_stress() -> Non
     assert payload["metrics"]["multi_solver_legal_candidate_count"] >= 1
     assert sum(payload["metrics"]["class_counts"].values()) == 25
     assert payload["metrics"]["status_counts"]["parsed"] == 25
+
+
+def test_enterprise_batch_20000_endpoint_uses_explicit_generated_pipeline() -> None:
+    headers = auth_headers(client)
+    response = client.post(
+        "/api/benchmarks/run/batch-20000",
+        json={"file_count": 30},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["benchmark_type"] == "batch_20000"
+    assert payload["status"] == "passed"
+    assert payload["file_count"] == 30
+    assert payload["metrics"]["synthetic"] is True
+    assert payload["metrics"]["fixture_source"] == "generated_svg_dxf_pdf_placeholders"
+    assert payload["metrics"]["file_count"] == 30
+    assert payload["metrics"]["sheet_parent"]["width"] == 787
+    assert payload["metrics"]["moq_per_item"] == 1000
+    assert payload["metrics"]["top_k"] == 3
+    assert payload["metrics"]["direct_parse_success_rate"] == 1
+    assert payload["metrics"]["plan_count"] == 3
 
 
 def test_enterprise_or_dataset_endpoint_imports_and_runs_case(tmp_path: Path) -> None:

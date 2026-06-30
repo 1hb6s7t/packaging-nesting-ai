@@ -38,6 +38,10 @@ def test_batch_layout_job_run_outputs_top3_groups_plans_and_preview() -> None:
     job = created.json()
     assert job["batch_id"] == batch_id
     assert len(job["cut_variants"]) >= 6
+    fetched_job = client.get(f"/api/batch-layout/jobs/{job['job_id']}", headers=headers)
+    assert fetched_job.status_code == 200
+    assert fetched_job.json()["job_id"] == job["job_id"]
+    assert fetched_job.json()["batch_id"] == batch_id
 
     run = client.post(f"/api/batch-layout/jobs/{job['job_id']}/run", headers=headers)
     assert run.status_code == 200
@@ -63,6 +67,10 @@ def test_batch_layout_job_run_outputs_top3_groups_plans_and_preview() -> None:
     assert plans.status_code == 200
     assert len(plans.json()) == 3
     plan_id = plans.json()[0]["plan_id"]
+    fetched_plan = client.get(f"/api/batch-layout/plans/{plan_id}", headers=headers)
+    assert fetched_plan.status_code == 200
+    assert fetched_plan.json()["plan_id"] == plan_id
+    assert fetched_plan.json()["patterns"]
 
     preview = client.get(f"/api/batch-layout/plans/{plan_id}/preview", headers=headers)
     assert preview.status_code == 200

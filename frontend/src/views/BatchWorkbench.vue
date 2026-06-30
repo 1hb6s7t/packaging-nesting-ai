@@ -13,8 +13,10 @@ import {
   parseBatchArtworks,
   preflightBatchArtworks,
   previewBatchPlan,
+  retryFailedBatchArtworks,
   requestBatchPlanApproval,
   runBatchLayoutJob,
+  runEnterpriseBatch20000,
   runEnterpriseBatch1500,
   runEnterpriseStress787,
   uploadBatchArtworks
@@ -38,6 +40,7 @@ const oversizeItems = computed(() => (summary.value?.items || []).filter((item) 
 const manualReviewItems = computed(() =>
   (summary.value?.items || []).filter((item) => item.status === "manual_review" || item.preflight_report?.requires_manual_review)
 );
+const failedItems = computed(() => (summary.value?.items || []).filter((item) => item.status === "failed"));
 const parsedCount = computed(() => summary.value?.batch.parsed_count || 0);
 const planLegalCount = computed(() => plans.value.filter((plan) => plan.hard_rule_pass).length);
 
@@ -86,6 +89,17 @@ async function preflightBatch() {
 async function parseBatch() {
   if (!currentBatchId.value) return;
   const result = await runStep("parse", () => parseBatchArtworks(currentBatchId.value));
+  if (result) summary.value = result;
+}
+
+async function retryFailedBatch() {
+  if (!currentBatchId.value) return;
+  const result = await runStep("retryFailed", () =>
+    retryFailedBatchArtworks(
+      currentBatchId.value,
+      failedItems.value.map((item) => item.item_id)
+    )
+  );
   if (result) summary.value = result;
 }
 
@@ -140,9 +154,9 @@ async function refreshPlans(jobId: string, planId?: string) {
   selectedPlan.value = rows.find((row) => row.plan_id === planId) || rows[0] || null;
 }
 
-async function runStress(type: "787" | "1500") {
-  const result = await runStep(type === "787" ? "stress787" : "stress1500", () =>
-    type === "787" ? runEnterpriseStress787() : runEnterpriseBatch1500(1500)
+async function runStress(type: "787" | "1500" | "20000") {
+  const result = await runStep(type === "787" ? "stress787" : type === "1500" ? "stress1500" : "stress20000", () =>
+    type === "787" ? runEnterpriseStress787() : type === "1500" ? runEnterpriseBatch1500(1500) : runEnterpriseBatch20000(20000)
   );
   if (result) stressResult.value = result;
 }
@@ -218,6 +232,10 @@ function percent(value: number | undefined | null) {
           <RefreshCw :size="16" />
           解析
         </el-button>
+        <el-button :loading="loading === 'retryFailed'" :disabled="!currentBatchId || !failedItems.length" @click="retryFailedBatch">
+          <RefreshCw :size="16" />
+          重试失败
+        </el-button>
         <el-button type="success" :loading="loading === 'layout'" :disabled="!currentBatchId" @click="runLayout">
           <Play :size="16" />
           运行 Top3
@@ -258,6 +276,7 @@ function percent(value: number | undefined | null) {
         <el-table-column label="置信度" width="100">
           <template #default="{ row }">{{ percent(row.feature?.parse_confidence) }}</template>
         </el-table-column>
+        <el-table-column prop="retry_count" label="重试" width="80" />
         <el-table-column prop="parse_error" label="异常" min-width="260" show-overflow-tooltip />
       </el-table>
     </div>
@@ -346,6 +365,10 @@ function percent(value: number | undefined | null) {
         <el-button :loading="loading === 'stress1500'" @click="runStress('1500')">
           <BarChart3 :size="16" />
           1500 文件压测
+        </el-button>
+        <el-button :loading="loading === 'stress20000'" @click="runStress('20000')">
+          <BarChart3 :size="16" />
+          20000 文件压测
         </el-button>
       </div>
       <el-alert

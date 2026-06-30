@@ -45,6 +45,7 @@ class EnterpriseBenchmarkRunner:
         include_pdf_fallback: bool = False,
         moq_per_item: int = 1000,
         top_k: int = 3,
+        benchmark_type: str = "batch_1500",
     ) -> schemas.BatchBenchmarkRunRead:
         if file_count < 1:
             raise ValueError("file_count must be >= 1")
@@ -56,7 +57,7 @@ class EnterpriseBenchmarkRunner:
             db,
             source_name=f"enterprise_batch_{file_count}",
             metadata={
-                "benchmark": "batch_1500_pipeline",
+                "benchmark": benchmark_type,
                 "fixture_count": len(fixtures),
                 "include_pdf_fallback": include_pdf_fallback,
             },
@@ -109,7 +110,8 @@ class EnterpriseBenchmarkRunner:
         total_runtime_ms = sum(stage_runtime_ms.values())
         metrics = {
             "pipeline": "batch_artwork_to_batch_layout",
-            "synthetic": False,
+            "synthetic": True,
+            "fixture_source": "generated_svg_dxf_pdf_placeholders",
             "batch_id": batch.batch_id,
             "job_id": job.job_id,
             "file_count": file_count,
@@ -142,7 +144,7 @@ class EnterpriseBenchmarkRunner:
         }
         return create_batch_benchmark_run(
             db,
-            benchmark_type="batch_1500",
+            benchmark_type=benchmark_type,
             status="passed" if hard_rule_rate == 1.0 and quantity_rate >= 1.0 and topk_rate >= 1.0 else "failed",
             file_count=file_count,
             p95_runtime_ms=max(stage_runtime_ms.values()) if stage_runtime_ms else None,

@@ -72,6 +72,18 @@ def run_batch_layout_job(
     return result
 
 
+@router.get("/jobs/{job_id}", response_model=BatchLayoutJobRead)
+def get_batch_layout_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> BatchLayoutJobRead:
+    job = service.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="batch layout job not found")
+    return job
+
+
 @router.get("/jobs/{job_id}/groups", response_model=list[BatchLayoutGroupRead])
 def list_batch_layout_groups(
     job_id: str,
@@ -92,6 +104,18 @@ def list_batch_layout_plans(
     if service.get_job(db, job_id) is None:
         raise HTTPException(status_code=404, detail="batch layout job not found")
     return service.list_plans(db, job_id)
+
+
+@router.get("/plans/{plan_id}", response_model=ProductionPlanRead)
+def get_batch_layout_plan(
+    plan_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProductionPlanRead:
+    plan = service.get_plan(db, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="production plan not found")
+    return plan
 
 
 @router.get("/plans/{plan_id}/preview")

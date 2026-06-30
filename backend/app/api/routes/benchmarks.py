@@ -152,7 +152,44 @@ def run_batch_1500_stress(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("benchmark:write")),
 ) -> BatchBenchmarkRunRead:
+    return _run_batch_pipeline_stress(
+        db,
+        current_user=current_user,
+        payload=payload,
+        default_file_count=1500,
+        benchmark_type="batch_1500",
+        log_action="benchmark.batch_1500.run",
+    )
+
+
+@router.post("/run/batch-20000", response_model=BatchBenchmarkRunRead)
+def run_batch_20000_stress(
+    payload: dict[str, Any] | None = None,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("benchmark:write")),
+) -> BatchBenchmarkRunRead:
+    return _run_batch_pipeline_stress(
+        db,
+        current_user=current_user,
+        payload=payload,
+        default_file_count=20000,
+        benchmark_type="batch_20000",
+        log_action="benchmark.batch_20000.run",
+    )
+
+
+def _run_batch_pipeline_stress(
+    db: Session,
+    *,
+    current_user: CurrentUser,
+    payload: dict[str, Any] | None,
+    default_file_count: int,
+    benchmark_type: str,
+    log_action: str,
+) -> BatchBenchmarkRunRead:
     file_count = int((payload or {}).get("file_count", 1500))
+    if payload is None or "file_count" not in payload:
+        file_count = default_file_count
     if file_count < 1:
         raise HTTPException(status_code=422, detail="file_count must be >= 1")
     try:
@@ -162,12 +199,13 @@ def run_batch_1500_stress(
             include_pdf_fallback=bool((payload or {}).get("include_pdf_fallback", False)),
             moq_per_item=int((payload or {}).get("moq_per_item", 1000)),
             top_k=int((payload or {}).get("top_k", 3)),
+            benchmark_type=benchmark_type,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     repository.log_operation(
         db,
-        action="benchmark.batch_1500.run",
+        action=log_action,
         target_type="batch_benchmark_run",
         target_id=run.run_id,
         actor_id=current_user.user_id,

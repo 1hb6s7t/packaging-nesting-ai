@@ -75,7 +75,7 @@ Docker Compose 已为 PostgreSQL、Redis 和 API 配置 healthcheck：API 会在
 ## 生产化注意点
 
 - PostgreSQL、MinIO 建议独立持久化和备份。
-- 生产反向代理不要绕过 API 鉴权：除 `/api/health`、`/api/health/ready`、`/api/auth/login`、静态 AI 工具 schema 和无状态版图预检外，订单、纸张、版图、拼版任务、方案、报告、预览、Solver 运行和审计数据都必须携带 Bearer Token；供应商转换回调入口必须保留 `X-Conversion-Callback-Token` 头并由后端校验。
+- 生产反向代理不要绕过 API 鉴权：除 `/api/health`、`/api/health/ready`、`/api/auth/login` 和无状态版图预检外，订单、纸张、版图、拼版任务、方案、报告、预览、Solver 运行、AI 工具 schema 和审计数据都必须携带 Bearer Token；`/api/ai/tools` 还需要 `ai:use` 权限；供应商转换回调入口必须保留 `X-Conversion-Callback-Token` 头并由后端校验。
 - API 默认返回 `X-Content-Type-Options=nosniff`、`X-Frame-Options=DENY`、`Referrer-Policy=no-referrer` 和受限 `Permissions-Policy`；如 TLS 终止在反向代理，应由代理配置 HSTS，如 TLS 终止在 API 同层可设置 `SECURITY_HSTS_ENABLED=true` 和 `SECURITY_HSTS_MAX_AGE_SEC`。
 - 反向代理应透传或生成安全格式的 `X-Request-ID`；API 会在响应头和错误 JSON 的 `request_id` 中回传请求 ID，并在 `app.request` 访问日志中记录 request_id、方法、路径、状态码和耗时，便于生产故障排查和客户工单追踪。未处理异常只返回安全的 `internal server error`，具体堆栈只进入后端日志。
 - 上线监控可用 `GET /api/metrics` 拉取 API 请求数、5xx 错误数和响应耗时聚合数据；该接口需要 Bearer Token 且用户具备 `audit:read` 权限，不应作为负载均衡匿名探针。
