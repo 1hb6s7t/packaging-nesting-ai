@@ -1,8 +1,12 @@
 from app.domain.schemas import ArtworkFeature, BatchArtworkItemRead, BBox, SheetParentSpec
 from app.services.batch_layout import (
-    CandidateJobGenerator,
     CompatibilityGroupingService,
     SheetCutVariantGenerator,
+)
+from app.services.batch_patterns import (
+    CandidateJobGenerator,
+    PatternPlanner,
+    ProductionPlanBuilder,
     TopKGlobalPlanSelector,
 )
 
@@ -76,3 +80,48 @@ def test_candidate_generation_and_top3_selector_produce_diverse_legal_plans() ->
     assert {plan.intent for plan in plans} == {"highest_utilization", "balanced_risk", "fastest_production"}
     assert all(plan.hard_rule_pass for plan in plans)
     assert all(plan.quantity_fulfillment_rate == 1 for plan in plans)
+
+
+def test_pattern_planner_tracks_mixed_item_quantity_fulfillment_by_item() -> None:
+    parent = SheetParentSpec(parent_id="PARENT_787_1092", width=787, height=1092)
+    variant = next(variant for variant in SheetCutVariantGenerator().generate(parent) if variant.code == "PARENT")
+    items = [
+        _item("anchor_box", "white_card", 180, 120, quantity=1000),
+        _item("filler_box", "white_card", 90, 70, quantity=1000),
+    ]
+    group = CompatibilityGroupingService().group(items)[0].model_copy(update={"job_id": "job_mixed", "group_id": "group_1"})
+
+    pattern = PatternPlanner().plan_pattern(
+        "job_mixed",
+        group,
+        items,
+        variant,
+        moq_per_item=1000,
+    )
+    quantity_summary = pattern.validator_report["quantity_summary"]
+
+    assert pattern.hard_rule_pass is True
+    assert pattern.quantity_fulfillment_rate == 1
+    assert quantity_summary["requested_units_by_item"] == {"anchor_box": 1000, "filler_box": 1000}
+    assert quantity_summary["units_per_sheet_by_item"] == {"anchor_box": 36, "filler_box": 120}
+    assert quantity_summary["required_sheets_by_item"] == {"anchor_box": 28, "filler_box": 9}
+    assert pattern.required_sheets == 28
+    assert quantity_summary["produced_units_by_item"] == {"anchor_box": 1008, "filler_box": 3360}
+    assert quantity_summary["shortage_units"] == 0
+    assert quantity_summary["overproduction_units_by_item"] == {"anchor_box": 8, "filler_box": 2360}
+
+    plan = ProductionPlanBuilder().build(
+        job_id="job_mixed",
+        rank=1,
+        intent="highest_utilization",
+        patterns=[pattern],
+        diversity_score=1,
+    )
+    plan_quantity_summary = plan.validator_report["quantity_summary"]
+
+    assert plan.hard_rule_pass is True
+    assert plan.total_sheets_used == 28
+    assert plan.quantity_fulfillment_rate == 1
+    assert plan_quantity_summary["produced_units_by_item"]["anchor_box"] == 1008
+    assert plan_quantity_summary["produced_units_by_item"]["filler_box"] == 3360
+    assert plan_quantity_summary["shortage_units"] == 0

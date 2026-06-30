@@ -13,7 +13,7 @@
 
 The project has moved beyond the original enterprise skeleton. It now contains persistent batch intake, batch artwork state tracking, feature extraction/classification, compatibility grouping, sheet cut variants, batch layout jobs, production patterns/plans, approval-gated production-plan export, MultiSolver candidate-pool evidence, external CLI solver contracts, benchmark gates, controlled batch AI tools, and a Vue batch workbench.
 
-It is still not fully production-grade for unattended customer go-live. The largest remaining gaps are true production-coordinate batch planning, real configured PackingSolver/Sparrow binaries contributing legal candidates, deeper PatternPlanner support for mixed multi-item fulfillment, full real-sample 1500/20000 slow-release stress coverage in release gates, and stronger frontend coverage for dedicated enterprise views, virtualization, and benchmark history.
+It is still not fully production-grade for unattended customer go-live. The largest remaining gaps are true production-coordinate batch planning, real configured PackingSolver/Sparrow binaries contributing legal candidates, full real-sample 1500/20000 slow-release stress coverage in release gates, and stronger frontend coverage for dedicated enterprise views, virtualization, and benchmark history.
 
 ## Enterprise-Usable Capabilities
 
@@ -38,7 +38,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | Area | MVP behavior | Enterprise gap |
 | --- | --- | --- |
 | Native artwork parsing | SVG/DXF direct parsing and PDF/manual/conversion fallback exist. | Parser is not proven at 99.5% native SVG/DXF success on real customer corpora; PDF/CDR/AI are not production-native parsers. |
-| Batch layout patterns | Patterns are generated from bbox/feature capacity estimates and group/cut-variant heuristics. | Final batch production coordinates are not yet mapped from each selected solver candidate into exact persisted production pattern placements. |
+| Batch layout patterns | `PatternPlanner` generates bbox/feature capacity patterns with per-item mixed-order quantity summaries. | Final batch production coordinates are not yet mapped from each selected solver candidate into exact persisted production pattern placements. |
 | Top3 production plans | `TopKGlobalPlanSelector` emits highest-utilization, balanced-risk, fastest-production intents with `diversity_score`. | Fallback can still create lower-diversity variants when candidate signatures repeat; Top3 validity depends on candidate-pool evidence and heuristic pattern feasibility, not full physical placement solving for every pattern. |
 | MultiSolver orchestration | Candidate-pool execution runs solver names x seeds x time limits x rotation policies and ranks validated solutions. | Public API method names from the target (`generate_candidate_solutions`, `run_solver_matrix`, `validate_all`, `rank_top_k`) are not first-class methods; current surface is `solve_candidate_pool` plus helper methods. |
 | PackingSolver/Sparrow | Real CLI contracts exist, stdin/stdout JSON is handled, evidence is persisted. | Real binaries are not bundled or configured; without installed binaries these adapters correctly return failed auditable candidates. |
@@ -49,7 +49,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 ## Blocking Go-Live Items
 
 1. True production-coordinate batch layout is not complete.
-   Evidence: `backend/app/services/batch_layout.py` computes production patterns from capacity estimates; preview in `backend/app/api/routes/batch_layout.py` is summary SVG, not exact production placement output.
+   Evidence: `backend/app/services/batch_patterns.py` computes production patterns from capacity estimates; preview in `backend/app/api/routes/batch_layout.py` is summary SVG, not exact production placement output.
 
 2. Real external solvers are contract-ready but not operationally proven.
    Evidence: `backend/app/services/solvers/external_cli_adapters.py` supports CLI contracts; README and tests show missing binaries become failed solutions. Go-live requires configured PackingSolver/Sparrow binaries and real baseline runs.
@@ -74,8 +74,8 @@ It is still not fully production-grade for unattended customer go-live. The larg
 - Promote high-value solver attempt evidence from JSON logs into indexed first-class fields or artifact keys.
   Current evidence is durable in `solver_run_log.payload`, but reporting/search will be stronger with columns for `candidate_id`, `input_sha256`, `stdout/stderr` object keys, `validator_report`, and certificate references.
 
-- Separate `PatternPlanner`, `ProductionPlanBuilder`, and `Top3GlobalPlanSelector`.
-  Current code keeps these responsibilities largely inside `backend/app/services/batch_layout.py`. This is workable now but too dense for enterprise ownership and independent testing at 20000-file scale.
+- Continue hardening `PatternPlanner`, `ProductionPlanBuilder`, and `Top3GlobalPlanSelector`.
+  These responsibilities are now separated into `backend/app/services/batch_patterns.py`; next hardening should focus on exact placement persistence and larger real-sample mixed-pattern coverage.
 
 - Add exact placement persistence for `ProductionPattern`.
   `ProductionPattern` currently stores scalar planning metrics and validator summaries. Enterprise production needs per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
@@ -119,16 +119,16 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 ## MOQ 1000 And Pattern Risks
 
-- `batch_planning.py` and batch layout pattern metrics calculate `units_per_sheet`, `required_sheets`, produced units, shortage/overproduction, and quantity fulfillment.
-- Mixed multi-item OR-style pattern fulfillment remains limited; current release gate uses compact deterministic cases rather than proving all real mixed-item patterns.
-- `ProductionPlanPattern.produced_units` is scalar in the current ORM model; enterprise reporting will likely need per-order produced-unit JSON for multi-order patterns.
+- `batch_planning.py` and `batch_patterns.py` calculate `units_per_sheet`, `required_sheets`, produced units, shortage/overproduction, and quantity fulfillment.
+- Mixed multi-item quantity reporting is now available in `validator_report.quantity_summary`; current release gates still use compact deterministic cases rather than proving all real mixed-item customer patterns.
+- `ProductionPlanPattern.produced_units` is still scalar in the ORM link row, but per-item produced/shortage/overproduction JSON is now carried in pattern and plan validator reports.
 
 ## Backlog Status Map
 
 | Backlog item | Status |
 | --- | --- |
 | A0 架构契约 | Partially complete: `docs/ENTERPRISE_FINALIZATION.md` exists, but this current report identifies missing endpoint contracts and go-live gaps. |
-| A1 数据库迁移 | Mostly complete for listed batch/pattern/plan/benchmark objects; future migration needed for first-class solver attempt evidence and richer produced-units JSON. |
+| A1 数据库迁移 | Mostly complete for listed batch/pattern/plan/benchmark objects; future migration needed for first-class solver attempt evidence and optional indexed produced-units fields beyond validator-report JSON. |
 | A2 批量文件入口 | Mostly complete: upload/preflight/parse/summary/retry exist; native parser success and resumable 1500/20000 UX still need proof. |
 | A3 版图特征和分类 | Foundation complete; target real-sample classification fixture tests still needed. |
 | A3 兼容分组 | Foundation complete by material/thickness/print method/spot color/due date/category/customer; hard customer rules need expansion. |
@@ -136,8 +136,8 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | A4 MultiSolverOrchestrator | Foundation complete; public method contract and full cut-variant solver matrix need hardening. |
 | A4 PackingSolverAdapter | Contract complete; real binary acceptance not proven. |
 | A4 SparrowSolverAdapter | Contract complete; real binary acceptance not proven. |
-| A5 PatternPlanner | Foundation present inside batch layout and batch planning; should be extracted and deepened for mixed multi-item quantities. |
-| A5 Top3GlobalPlanSelector | Foundation complete; stronger diversity/validity proof needed. |
+| A5 PatternPlanner | Extracted to `batch_patterns.py` with mixed multi-item quantity summaries; exact placement persistence and broader real-sample proof still needed. |
+| A5 Top3GlobalPlanSelector | Extracted with `ProductionPlanBuilder`; stronger diversity/validity proof over real mixed irregular shapes still needed. |
 | A6 Benchmark gate | Foundation complete for OR/787/MOQ and generated batch-1500/20000 endpoint coverage; missing default slow real-sample gates. |
 | A6 OR-Datasets importer | Present. |
 | A7 前端批量页面 | Foundation present as one workbench with retry and batch-20000 controls; dedicated enterprise pages, virtualization, and history views still missing. |
@@ -146,20 +146,20 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 ## Recommended Next Implementation Order
 
-1. Extract PatternPlanner/ProductionPlanBuilder from `batch_layout.py` and add mixed multi-item quantity tests.
-2. Add real sample fixture classification tests for the PDF examples.
-3. Add slow-release scripts for real sample directory, full 1500 generated pipeline, and 20000 synthetic batch.
-4. Convert generated 1500/20000 endpoint evidence into formal slow gate artifacts with clear synthetic/real dataset labels.
-5. Add operator-facing batch AI playbooks that show controlled query/run/report flows and explicitly exclude export/approval bypass.
+1. Add real sample fixture classification tests for the PDF examples.
+2. Add slow-release scripts for real sample directory, full 1500 generated pipeline, and 20000 synthetic batch.
+3. Convert generated 1500/20000 endpoint evidence into formal slow gate artifacts with clear synthetic/real dataset labels.
+4. Add operator-facing batch AI playbooks that show controlled query/run/report flows and explicitly exclude export/approval bypass.
+5. Persist exact per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
 
 ## Current Verification Snapshot
 
 This report and the contract patches made with it were verified with:
 
-- `pytest -q tests\backend`: 466 passed, 2 skipped.
+- `pytest -q tests\backend`: 467 passed, 2 skipped.
 - `python -m ruff check backend tests scripts`: passed.
 - `npm.cmd run build` from `frontend/`: passed.
-- `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-ai-batch.json`: passed, 7 cases, 0 errors, P95 22 ms.
+- `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-patterns.json`: passed, 7 cases, 0 errors, P95 25 ms.
 - `git diff --check`: no whitespace errors; Windows line-ending warnings only.
 
 This report is an audit artifact plus a contract-alignment record. Any implementation changes after this report must rerun the relevant backend/frontend/release gates before being considered complete.
