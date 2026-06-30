@@ -29,6 +29,7 @@ def test_verify_release_evidence_pack_accepts_generated_pack(tmp_path: Path) -> 
 
     evidence_module.build_release_evidence_pack(output_dir=output_dir)
     report = verify_module.verify_release_evidence_pack(output_dir / "release-evidence-pack.json")
+    manifest = json.loads((output_dir / "release-evidence-pack.json").read_text(encoding="utf-8"))
 
     assert report["status"] == "passed"
     assert report["summary"]["artifact_count"] == 11
@@ -38,6 +39,8 @@ def test_verify_release_evidence_pack_accepts_generated_pack(tmp_path: Path) -> 
     assert report["summary"]["failed_count"] == 0
     assert report["manifest_errors"] == []
     assert {item["status"] for item in report["checks"]} <= {"passed", "skipped"}
+    assert manifest["summary"]["policy_contract_status"] in {"passed", "warning"}
+    assert manifest["summary"]["policy_contract_failed_count"] == 0
 
 
 def test_verify_release_evidence_pack_uses_relative_paths_after_copy(tmp_path: Path) -> None:
@@ -139,6 +142,64 @@ def test_verify_release_evidence_pack_rejects_unsafe_relative_path(tmp_path: Pat
     assert "unsafe" in report["checks"][0]["errors"][0]
 
 
+def test_verify_release_evidence_pack_rejects_failed_manifest_policy_contract(tmp_path: Path) -> None:
+    evidence_module = load_module("release_evidence_pack_for_policy_verify", EVIDENCE_SCRIPT_PATH)
+    verify_module = load_module("verify_release_evidence_pack_for_policy", VERIFY_SCRIPT_PATH)
+    output_dir = tmp_path / "evidence"
+
+    evidence_module.build_release_evidence_pack(output_dir=output_dir)
+    manifest_path = output_dir / "release-evidence-pack.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["policy_contract"]["status"] = "failed"
+    manifest["policy_contract"]["failed_count"] = 1
+    manifest["summary"]["policy_contract_status"] = "failed"
+    manifest["summary"]["policy_contract_failed_count"] = 1
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    report = verify_module.verify_release_evidence_pack(manifest_path)
+
+    assert report["status"] == "failed"
+    assert "manifest policy_contract must be passed or warning, got failed" in report["manifest_errors"]
+    assert "manifest policy_contract has failed checks" in report["manifest_errors"]
+
+
+def test_verify_release_evidence_pack_rejects_manifest_policy_summary_mismatch(tmp_path: Path) -> None:
+    evidence_module = load_module("release_evidence_pack_for_policy_summary_verify", EVIDENCE_SCRIPT_PATH)
+    verify_module = load_module("verify_release_evidence_pack_for_policy_summary", VERIFY_SCRIPT_PATH)
+    output_dir = tmp_path / "evidence"
+
+    evidence_module.build_release_evidence_pack(output_dir=output_dir)
+    manifest_path = output_dir / "release-evidence-pack.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["summary"]["policy_contract_failed_count"] = 9
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    report = verify_module.verify_release_evidence_pack(manifest_path)
+
+    assert report["status"] == "failed"
+    assert "manifest summary policy_contract_failed_count does not match policy_contract failed_count" in report["manifest_errors"]
+
+
+def test_verify_release_evidence_pack_rejects_failed_artifact_policy_summary(tmp_path: Path) -> None:
+    evidence_module = load_module("release_evidence_pack_for_artifact_policy_verify", EVIDENCE_SCRIPT_PATH)
+    verify_module = load_module("verify_release_evidence_pack_for_artifact_policy", VERIFY_SCRIPT_PATH)
+    output_dir = tmp_path / "evidence"
+
+    evidence_module.build_release_evidence_pack(output_dir=output_dir)
+    manifest_path = output_dir / "release-evidence-pack.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifact = next(item for item in manifest["artifacts"] if item["name"] == "repository_hygiene_audit")
+    artifact["summary"]["policy_contract_status"] = "failed"
+    artifact["summary"]["policy_contract_failed_count"] = 1
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    report = verify_module.verify_release_evidence_pack(manifest_path)
+
+    assert report["status"] == "failed"
+    assert "repository_hygiene_audit policy_contract_status must be one of ['passed', 'warning'], got failed" in report["manifest_errors"]
+    assert "repository_hygiene_audit policy_contract_failed_count must be 0" in report["manifest_errors"]
+
+
 def test_verify_release_evidence_pack_cli_writes_report_and_returns_nonzero(tmp_path: Path) -> None:
     verify_module = load_module("verify_release_evidence_pack_for_cli", VERIFY_SCRIPT_PATH)
     manifest_path = tmp_path / "release-evidence-pack.json"
@@ -153,4 +214,6 @@ def test_verify_release_evidence_pack_cli_writes_report_and_returns_nonzero(tmp_
     assert exit_code == 1
     report = json.loads(output_path.read_text(encoding="utf-8"))
     assert report["status"] == "failed"
-    assert report["summary"]["manifest_error_count"] == 1
+    assert report["summary"]["manifest_error_count"] >= 1
+    assert "manifest policy_contract is missing or invalid" in report["manifest_errors"]
+    assert any("missing expected entries" in error for error in report["manifest_errors"])

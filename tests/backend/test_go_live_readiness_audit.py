@@ -145,6 +145,26 @@ def test_go_live_readiness_audit_requires_repository_hygiene_artifact(tmp_path: 
     assert "repository hygiene audit artifact is missing" in report["blockers"]
 
 
+def test_go_live_readiness_audit_requires_customer_sandbox_artifact(tmp_path: Path) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    manifest["artifacts"] = [
+        item for item in manifest["artifacts"] if item["name"] != "release_evidence_artifact:customer_sandbox_audit"
+    ]
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "customer sandbox audit artifact is missing" in report["blockers"]
+
+
 def test_go_live_readiness_audit_requires_release_image_dependency_audit_artifact(tmp_path: Path) -> None:
     module = load_go_live_readiness_audit_module()
     handoff_path = tmp_path / "release-handoff-bundle.json"
@@ -161,6 +181,167 @@ def test_go_live_readiness_audit_requires_release_image_dependency_audit_artifac
 
     assert report["status"] == "failed"
     assert "release image dependency audit artifact is missing" in report["blockers"]
+
+
+def test_go_live_readiness_audit_requires_release_image_dependency_verification_artifact(tmp_path: Path) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    manifest["artifacts"] = [
+        item for item in manifest["artifacts"] if item["name"] != "release_image_dependency_verification"
+    ]
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "release image dependency verification artifact is missing" in report["blockers"]
+
+
+def test_go_live_readiness_audit_requires_dependency_review_verification_artifact(tmp_path: Path) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    manifest["artifacts"] = [item for item in manifest["artifacts"] if item["name"] != "dependency_review_verification"]
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "dependency review verification artifact is missing" in report["blockers"]
+
+
+def test_go_live_readiness_audit_requires_production_env_verification_artifact(tmp_path: Path) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    manifest["artifacts"] = [item for item in manifest["artifacts"] if item["name"] != "production_env_verification"]
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "production env verification artifact is missing" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_production_env_verification_without_rebuild_match(
+    tmp_path: Path,
+) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    by_name["production_env_verification"]["summary"]["rebuilt_report_match"] = False
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "production env verification must match the supplied env file" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_failed_external_acceptance_verification_summary(
+    tmp_path: Path,
+) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    by_name["external_acceptance_verification"]["summary"]["failed_evidence_check_count"] = 1
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "external acceptance verification has failed evidence checks" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_failed_release_image_dependency_verification_summary(
+    tmp_path: Path,
+) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    by_name["release_image_dependency_verification"]["summary"]["failed_output_check_count"] = 1
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "release image dependency verification has failed output checks" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_failed_dependency_review_verification_summary(
+    tmp_path: Path,
+) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    by_name["dependency_review_verification"]["summary"]["error_count"] = 1
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "dependency review verification summary has errors" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_skipped_dependency_review_verification_summary(
+    tmp_path: Path,
+) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    by_name["dependency_review_verification"]["summary"]["report_status"] = "skipped"
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "dependency review verification report_status must be passed" in report["blockers"]
 
 
 def test_go_live_readiness_audit_rejects_failed_release_image_policy_contract(tmp_path: Path) -> None:
@@ -181,6 +362,48 @@ def test_go_live_readiness_audit_rejects_failed_release_image_policy_contract(tm
 
     assert report["status"] == "failed"
     assert "release image dependency audit policy contract has failed checks" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_failed_nested_artifact_contract(tmp_path: Path) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    summary = by_name["release_evidence_artifact:customer_sandbox_audit"]["summary"]["manifest_evidence_summary"]
+    summary["sync_strategy_status"] = "failed"
+    summary["sync_strategy_failed_count"] = 1
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "customer sandbox audit sync_strategy has failed checks" in report["blockers"]
+
+
+def test_go_live_readiness_audit_rejects_failed_sensitive_scan_summary(tmp_path: Path) -> None:
+    module = load_go_live_readiness_audit_module()
+    handoff_path = tmp_path / "release-handoff-bundle.json"
+    verification_path = tmp_path / "release-handoff-verification.json"
+    manifest = complete_handoff_manifest()
+    by_name = {item["name"]: item for item in manifest["artifacts"]}
+    summary = by_name["release_evidence_artifact:storage_export_audit"]["summary"]["manifest_evidence_summary"]
+    summary["sensitive_scan_status"] = "failed"
+    summary["sensitive_scan_failed_count"] = 1
+    write_json(handoff_path, manifest)
+    write_json(verification_path, handoff_verification(handoff_path))
+
+    report = module.build_go_live_readiness_audit(
+        handoff_manifest=handoff_path,
+        handoff_verification=verification_path,
+    )
+
+    assert report["status"] == "failed"
+    assert "storage export audit sensitive scan has failed findings" in report["blockers"]
 
 
 def test_go_live_readiness_audit_allows_non_blocking_missing_test_extra(tmp_path: Path) -> None:
@@ -241,22 +464,88 @@ def complete_handoff_manifest() -> dict:
         artifact(
             "release_evidence_artifact:deployment_compose_audit",
             "passed",
-            summary=evidence_summary("deployment_compose_audit", policy_summary("warning", warnings=1)),
+            summary=evidence_summary("deployment_compose_audit", {**policy_summary("warning", warnings=1), **sensitive_summary()}),
         ),
         artifact(
             "release_evidence_artifact:repository_hygiene_audit",
             "passed",
-            summary=evidence_summary("repository_hygiene_audit", policy_summary()),
+            summary=evidence_summary("repository_hygiene_audit", {**policy_summary(), **sensitive_summary()}),
+        ),
+        artifact(
+            "release_evidence_artifact:customer_sandbox_audit",
+            "passed",
+            summary=evidence_summary(
+                "customer_sandbox_audit",
+                {
+                    "pack_contract_status": "passed",
+                    "pack_contract_failed_count": 0,
+                    "pack_contract_warning_count": 0,
+                    "sync_strategy_status": "passed",
+                    "sync_strategy_failed_count": 0,
+                    "sync_strategy_warning_count": 0,
+                    "business_flow_status": "passed",
+                    "business_flow_failed_count": 0,
+                    "business_flow_warning_count": 0,
+                    **sensitive_summary(),
+                },
+            ),
+        ),
+        artifact(
+            "release_evidence_artifact:notification_channel_audit",
+            "passed",
+            summary=evidence_summary("notification_channel_audit", {**policy_summary(), **sensitive_summary()}),
+        ),
+        artifact(
+            "release_evidence_artifact:storage_export_audit",
+            "passed",
+            summary=evidence_summary(
+                "storage_export_audit",
+                {
+                    "storage_contract_status": "passed",
+                    "storage_contract_failed_count": 0,
+                    "storage_contract_warning_count": 0,
+                    **policy_summary(),
+                    **sensitive_summary(),
+                },
+            ),
+        ),
+        artifact(
+            "release_evidence_artifact:conversion_supplier_audit",
+            "passed",
+            summary=evidence_summary("conversion_supplier_audit", {**policy_summary(), **sensitive_summary()}),
+        ),
+        artifact(
+            "release_evidence_artifact:solver_governance_audit",
+            "passed",
+            summary=evidence_summary("solver_governance_audit", {**policy_summary(), **sensitive_summary()}),
         ),
         artifact(
             "release_evidence_artifact:production_env_audit",
             "passed",
-            summary=evidence_summary("production_env_audit", policy_summary()),
+            summary=evidence_summary("production_env_audit", {**policy_summary(), **sensitive_summary()}),
         ),
         artifact(
             "release_evidence_artifact:external_acceptance_audit",
             "passed",
-            summary=evidence_summary("external_acceptance_audit", policy_summary()),
+            summary=evidence_summary("external_acceptance_audit", {**policy_summary(), **sensitive_summary()}),
+        ),
+        artifact(
+            "production_env_verification",
+            "passed",
+            summary={
+                "report_status": "passed",
+                "error_count": 0,
+                "rebuilt_report_match": True,
+            },
+        ),
+        artifact(
+            "external_acceptance_verification",
+            "passed",
+            summary={
+                "report_status": "passed",
+                "error_count": 0,
+                "failed_evidence_check_count": 0,
+            },
         ),
         artifact(
             "dependency_inventory",
@@ -277,6 +566,14 @@ def complete_handoff_manifest() -> dict:
             },
         ),
         artifact(
+            "dependency_review_verification",
+            "passed",
+            summary={
+                "report_status": "passed",
+                "error_count": 0,
+            },
+        ),
+        artifact(
             "release_image_dependency_audit",
             "passed",
             summary={
@@ -284,6 +581,15 @@ def complete_handoff_manifest() -> dict:
                 "dependency_review_status": "passed",
                 "error_count": 0,
                 **policy_summary(),
+            },
+        ),
+        artifact(
+            "release_image_dependency_verification",
+            "passed",
+            summary={
+                "report_status": "passed",
+                "error_count": 0,
+                "failed_output_check_count": 0,
             },
         ),
     ]
@@ -324,11 +630,19 @@ def policy_summary(status: str = "passed", *, failed: int = 0, warnings: int = 0
     }
 
 
+def sensitive_summary(status: str = "passed", *, failed: int = 0) -> dict:
+    return {
+        "sensitive_scan_status": status,
+        "sensitive_scan_failed_count": failed,
+    }
+
+
 def evidence_summary(name: str, summary: dict) -> dict:
     return {
         "evidence_artifact_name": name,
         "evidence_artifact_status": "passed",
         "evidence_artifact_required": True,
+        "manifest_evidence_summary": summary,
         "evidence_summary": summary,
     }
 

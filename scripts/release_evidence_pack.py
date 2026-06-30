@@ -68,6 +68,32 @@ SENSITIVE_KEY_EXEMPTIONS = {
 }
 SENSITIVE_KEY_SUFFIX_EXEMPTIONS = ("_hash", "_tail", "_fingerprint")
 REDACTED_VALUE = "***"
+EXPECTED_ARTIFACT_NAMES = (
+    "production_env_audit",
+    "deployment_compose_audit",
+    "repository_hygiene_audit",
+    "customer_sandbox_audit",
+    "notification_channel_audit",
+    "storage_export_audit",
+    "conversion_supplier_audit",
+    "solver_governance_audit",
+    "external_acceptance_audit",
+    "dependency_inventory",
+    "dependency_review_audit",
+)
+FILELESS_OPTIONAL_ARTIFACTS = {"production_env_audit"}
+NESTED_CONTRACT_FIELDS = {
+    "production_env_audit": ("policy_contract",),
+    "deployment_compose_audit": ("policy_contract",),
+    "repository_hygiene_audit": ("policy_contract",),
+    "customer_sandbox_audit": ("pack_contract", "sync_strategy", "business_flow"),
+    "notification_channel_audit": ("policy_contract",),
+    "storage_export_audit": ("storage_contract", "policy_contract"),
+    "conversion_supplier_audit": ("policy_contract",),
+    "solver_governance_audit": ("policy_contract",),
+    "external_acceptance_audit": ("policy_contract",),
+    "dependency_review_audit": ("policy_contract",),
+}
 
 
 def build_release_evidence_pack(
@@ -274,6 +300,7 @@ def build_release_evidence_pack(
     }
     pack["summary"] = build_summary(artifacts)
     pack["status"] = "passed" if pack["summary"]["required_failed_count"] == 0 else "failed"
+    pack = attach_policy_contract(pack)
     manifest_path = write_json(resolved_output_dir / "release-evidence-pack.json", pack)
     pack["manifest_path"] = str(manifest_path)
     manifest_path.write_text(json.dumps(pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -558,6 +585,338 @@ def build_summary(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def attach_policy_contract(pack: dict[str, Any]) -> dict[str, Any]:
+    policy_contract = validate_release_evidence_pack_policy_contract(pack)
+    pack["policy_contract"] = policy_contract
+    summary = pack.get("summary")
+    if isinstance(summary, dict):
+        summary["policy_contract_status"] = policy_contract.get("status")
+        summary["policy_contract_failed_count"] = int(policy_contract.get("failed_count") or 0)
+        summary["policy_contract_warning_count"] = int(policy_contract.get("warning_count") or 0)
+    if int(policy_contract.get("failed_count") or 0):
+        pack["status"] = "failed"
+    return pack
+
+
+def validate_release_evidence_pack_policy_contract(pack: dict[str, Any]) -> dict[str, Any]:
+    artifacts = pack.get("artifacts") if isinstance(pack.get("artifacts"), list) else []
+    summary = pack.get("summary") if isinstance(pack.get("summary"), dict) else {}
+    artifact_names = [str(item.get("name")) for item in artifacts if isinstance(item, dict) and item.get("name")]
+    missing_artifacts = [name for name in EXPECTED_ARTIFACT_NAMES if name not in artifact_names]
+    unexpected_artifacts = sorted(name for name in artifact_names if name not in EXPECTED_ARTIFACT_NAMES)
+    expected_status = "passed" if summary.get("required_failed_count") == 0 else "failed"
+
+    checks = [
+        policy_check(
+            code="schema.version",
+            status="passed" if pack.get("schema_version") == 1 else "failed",
+            message="release evidence pack schema_version is 1"
+            if pack.get("schema_version") == 1
+            else "release evidence pack schema_version must be 1",
+            evidence={"schema_version": pack.get("schema_version")},
+        ),
+        policy_check(
+            code="manifest.summary",
+            status="passed" if summary_matches_artifacts(summary, artifacts) else "failed",
+            message="release evidence pack summary matches artifact statuses"
+            if summary_matches_artifacts(summary, artifacts)
+            else "release evidence pack summary must match artifact statuses",
+            evidence=summary_consistency_evidence(summary, artifacts),
+        ),
+        policy_check(
+            code="manifest.status",
+            status="passed" if pack.get("status") == expected_status else "failed",
+            message="release evidence pack status matches required artifact failures"
+            if pack.get("status") == expected_status
+            else "release evidence pack status must match required artifact failures",
+            evidence={"status": pack.get("status"), "expected_status": expected_status},
+        ),
+        policy_check(
+            code="artifacts.expected_set",
+            status="failed" if missing_artifacts else "warning" if unexpected_artifacts else "passed",
+            message="release evidence pack contains the expected artifact set"
+            if not missing_artifacts and not unexpected_artifacts
+            else "release evidence pack artifact set should match the delivery contract",
+            evidence={"missing_artifacts": missing_artifacts, "unexpected_artifacts": unexpected_artifacts},
+        ),
+        policy_check(
+            code="artifacts.required_passed",
+            status="passed" if not required_artifact_failures(artifacts) else "failed",
+            message="all required release evidence artifacts passed"
+            if not required_artifact_failures(artifacts)
+            else "all required release evidence artifacts must pass",
+            evidence={"failed_required_artifacts": required_artifact_failures(artifacts)},
+        ),
+        policy_check(
+            code="artifacts.optional_boundary",
+            status="passed" if not optional_boundary_errors(artifacts) else "failed",
+            message="optional skipped artifacts stay within the documented delivery boundary"
+            if not optional_boundary_errors(artifacts)
+            else "optional skipped artifacts must not be marked required or fail silently",
+            evidence={"errors": optional_boundary_errors(artifacts)},
+        ),
+        policy_check(
+            code="artifacts.integrity_fields",
+            status="passed" if not artifact_integrity_field_errors(artifacts) else "failed",
+            message="generated release evidence artifacts include relative path, size, and SHA-256"
+            if not artifact_integrity_field_errors(artifacts)
+            else "generated release evidence artifacts must include relative path, size, and SHA-256",
+            evidence={"errors": artifact_integrity_field_errors(artifacts)},
+        ),
+        policy_check(
+            code="artifacts.sensitive_scan",
+            status="passed" if not sensitive_scan_errors(artifacts) else "failed",
+            message="generated release evidence artifacts passed sensitive value scanning"
+            if not sensitive_scan_errors(artifacts)
+            else "generated release evidence artifacts must pass sensitive value scanning",
+            evidence={"errors": sensitive_scan_errors(artifacts)},
+        ),
+        nested_contract_policy_check(artifacts),
+        dependency_inventory_policy_check(artifacts),
+        dependency_review_policy_check(artifacts),
+    ]
+    failed_count = sum(1 for check in checks if check["status"] == "failed")
+    warning_count = sum(1 for check in checks if check["status"] == "warning")
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": "failed" if failed_count else "warning" if warning_count else "passed",
+        "passed_count": passed_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "failed_checks": [check for check in checks if check["status"] == "failed"],
+        "warning_checks": [check for check in checks if check["status"] == "warning"],
+        "checks": checks,
+    }
+
+
+def summary_matches_artifacts(summary: dict[str, Any], artifacts: list[Any]) -> bool:
+    return not summary_consistency_errors(summary, artifacts)
+
+
+def summary_consistency_evidence(summary: dict[str, Any], artifacts: list[Any]) -> dict[str, Any]:
+    return {
+        "errors": summary_consistency_errors(summary, artifacts),
+        "observed": summary_consistency_values(artifacts),
+        "summary": {key: summary.get(key) for key in summary_consistency_values(artifacts)},
+    }
+
+
+def summary_consistency_errors(summary: dict[str, Any], artifacts: list[Any]) -> list[str]:
+    observed = summary_consistency_values(artifacts)
+    errors: list[str] = []
+    for key, value in observed.items():
+        if summary.get(key) != value:
+            errors.append(f"summary.{key} must be {value}, got {summary.get(key)!r}")
+    return errors
+
+
+def summary_consistency_values(artifacts: list[Any]) -> dict[str, Any]:
+    artifact_items = [item for item in artifacts if isinstance(item, dict)]
+    failed = [item for item in artifact_items if item.get("status") not in {"passed", "skipped"}]
+    required_failed = [item for item in failed if item.get("required")]
+    skipped = [item for item in artifact_items if item.get("status") == "skipped"]
+    passed = [item for item in artifact_items if item.get("status") == "passed"]
+    return {
+        "artifact_count": len(artifact_items),
+        "required_count": sum(1 for item in artifact_items if item.get("required")),
+        "passed_count": len(passed),
+        "failed_count": len(failed),
+        "required_failed_count": len(required_failed),
+        "skipped_count": len(skipped),
+        "failed_artifacts": [str(item.get("name")) for item in failed],
+        "skipped_artifacts": [str(item.get("name")) for item in skipped],
+    }
+
+
+def required_artifact_failures(artifacts: list[Any]) -> list[str]:
+    failures: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not artifact.get("required"):
+            continue
+        if artifact.get("status") != "passed":
+            failures.append(str(artifact.get("name") or "<unnamed>"))
+    return failures
+
+
+def optional_boundary_errors(artifacts: list[Any]) -> list[str]:
+    errors: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            errors.append("artifact entry must be an object")
+            continue
+        name = str(artifact.get("name") or "<unnamed>")
+        status = artifact.get("status")
+        required = bool(artifact.get("required"))
+        has_file = artifact_has_file_evidence(artifact)
+        if status == "skipped" and required:
+            errors.append(f"{name} is skipped but marked required")
+        if status not in {"passed", "skipped"}:
+            errors.append(f"{name} has unsupported status for evidence pack handoff: {status or '<missing>'}")
+        if status == "skipped" and not has_file and name not in FILELESS_OPTIONAL_ARTIFACTS:
+            errors.append(f"{name} is skipped without file evidence")
+    return errors
+
+
+def artifact_integrity_field_errors(artifacts: list[Any]) -> list[str]:
+    errors: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        name = str(artifact.get("name") or "<unnamed>")
+        if artifact.get("status") == "skipped" and not artifact_has_file_evidence(artifact):
+            continue
+        relative_path = artifact.get("relative_path")
+        size_bytes = artifact.get("size_bytes")
+        sha256 = artifact.get("sha256")
+        if not isinstance(relative_path, str) or not relative_path:
+            errors.append(f"{name} relative_path is missing")
+        if not isinstance(size_bytes, int) or size_bytes <= 0:
+            errors.append(f"{name} size_bytes is missing or invalid")
+        if not is_sha256_hex(sha256):
+            errors.append(f"{name} sha256 is missing or invalid")
+    return errors
+
+
+def sensitive_scan_errors(artifacts: list[Any]) -> list[str]:
+    errors: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not artifact_has_file_evidence(artifact):
+            continue
+        name = str(artifact.get("name") or "<unnamed>")
+        summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+        if summary.get("sensitive_scan_status") != "passed":
+            errors.append(f"{name} sensitive_scan_status must be passed")
+        if summary.get("sensitive_scan_failed_count") not in {0, None}:
+            errors.append(f"{name} sensitive_scan_failed_count must be 0")
+    return errors
+
+
+def nested_contract_policy_check(artifacts: list[Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        name = str(artifact.get("name") or "")
+        contract_prefixes = NESTED_CONTRACT_FIELDS.get(name, ())
+        if not contract_prefixes or (artifact.get("status") == "skipped" and not artifact_has_file_evidence(artifact)):
+            continue
+        summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+        for prefix in contract_prefixes:
+            status = summary.get(f"{prefix}_status")
+            failed_count = summary.get(f"{prefix}_failed_count")
+            warning_count = summary.get(f"{prefix}_warning_count")
+            allowed_statuses = {"passed", "warning"}
+            if artifact.get("status") == "skipped" and not artifact.get("required"):
+                allowed_statuses.add("skipped")
+            if status not in allowed_statuses:
+                errors.append(f"{name} {prefix}_status must be one of {sorted(allowed_statuses)}, got {status or '<missing>'}")
+            if failed_count not in {0, None}:
+                errors.append(f"{name} {prefix}_failed_count must be 0")
+            if isinstance(warning_count, int) and warning_count > 0:
+                warnings.append(f"{name} {prefix} has {warning_count} warning check(s)")
+    return policy_check(
+        code="artifacts.nested_contracts",
+        status="failed" if errors else "warning" if warnings else "passed",
+        message="nested artifact policy contracts passed without warnings"
+        if not errors and not warnings
+        else "nested artifact policy contracts must pass and warnings need release-owner review",
+        evidence={"errors": errors, "warnings": warnings},
+    )
+
+
+def dependency_inventory_policy_check(artifacts: list[Any]) -> dict[str, Any]:
+    inventory = artifact_by_name(artifacts).get("dependency_inventory") or {}
+    summary = inventory.get("summary") if isinstance(inventory.get("summary"), dict) else {}
+    missing_count = summary.get("release_blocking_missing_install_count")
+    if not isinstance(missing_count, int):
+        missing_count = summary.get("missing_install_count")
+    warning = isinstance(missing_count, int) and missing_count > 0
+    return policy_check(
+        code="dependency_inventory.release_image_required",
+        status="warning" if warning else "passed",
+        message="dependency inventory has no release-blocking missing installed packages"
+        if not warning
+        else "dependency inventory has release-blocking packages missing from the local environment; regenerate in the release image before go-live",
+        evidence={
+            "release_blocking_missing_install_count": missing_count,
+            "review_required_count": summary.get("review_required_count"),
+        },
+    )
+
+
+def dependency_review_policy_check(artifacts: list[Any]) -> dict[str, Any]:
+    by_name = artifact_by_name(artifacts)
+    inventory_summary = by_name.get("dependency_inventory", {}).get("summary")
+    review_summary = by_name.get("dependency_review_audit", {}).get("summary")
+    review_artifact = by_name.get("dependency_review_audit") or {}
+    inventory_summary = inventory_summary if isinstance(inventory_summary, dict) else {}
+    review_summary = review_summary if isinstance(review_summary, dict) else {}
+    review_required_count = inventory_summary.get("review_required_count")
+    approved_count = review_summary.get("approved_count")
+    errors: list[str] = []
+    warnings: list[str] = []
+    if isinstance(review_required_count, int) and review_required_count > 0:
+        if review_artifact.get("status") == "skipped":
+            warnings.append("dependency review audit is skipped while dependency inventory has review-required items")
+        elif review_artifact.get("status") != "passed":
+            errors.append("dependency review audit must pass when dependency inventory has review-required items")
+        elif approved_count != review_required_count:
+            errors.append("dependency review approved_count must match inventory review_required_count")
+    return policy_check(
+        code="dependency_review.signoff",
+        status="failed" if errors else "warning" if warnings else "passed",
+        message="dependency review signoff covers review-required inventory items"
+        if not errors and not warnings
+        else "dependency review signoff must cover review-required inventory items before go-live",
+        evidence={
+            "review_required_count": review_required_count,
+            "approved_count": approved_count,
+            "errors": errors,
+            "warnings": warnings,
+        },
+    )
+
+
+def artifact_by_name(artifacts: list[Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("name")): item
+        for item in artifacts
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def artifact_has_file_evidence(artifact: dict[str, Any]) -> bool:
+    return bool(
+        artifact.get("relative_path")
+        or artifact.get("path")
+        or artifact.get("size_bytes") is not None
+        or artifact.get("sha256")
+    )
+
+
+def is_sha256_hex(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def policy_check(
+    *,
+    code: str,
+    status: str,
+    message: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "severity": "critical" if status == "failed" else "warning" if status == "warning" else "info",
+        "message": message,
+        "evidence": evidence or {},
+    }
+
+
 def file_evidence(path: Path, *, base_dir: Path | None = None) -> dict[str, Any]:
     relative_path = path.name
     if base_dir is not None:
@@ -636,7 +995,8 @@ def main(argv: list[str] | None = None) -> int:
         f"manifest={pack['manifest_path']} "
         f"artifacts={summary['artifact_count']} "
         f"failed={summary['failed_count']} "
-        f"skipped={summary['skipped_count']}",
+        f"skipped={summary['skipped_count']} "
+        f"policy={summary.get('policy_contract_status')}",
         flush=True,
     )
     return 0 if pack["status"] == "passed" else 1

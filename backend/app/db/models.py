@@ -3,7 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
@@ -612,8 +612,23 @@ class BenchmarkRun(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("brun"))
     benchmark_case_id: Mapped[str] = mapped_column(ForeignKey("benchmark_case.id"), nullable=False)
     solver_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    planning_mode: Mapped[str] = mapped_column(String(40), default="single_sheet", nullable=False)
     utilization_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     waste_rate: Mapped[float] = mapped_column(Float, default=1, nullable=False)
     runtime_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     valid: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    hard_rule_pass: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quantity_fulfillment_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    requested_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    produced_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    shortage_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    overproduction_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    units_per_sheet: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sheets_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    peak_rss_mb: Mapped[float | None] = mapped_column(Float)
+    export_ok: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    case_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    baseline_delta_utilization_rate: Mapped[float | None] = mapped_column(Float)
+    p95_runtime_ms: Mapped[int | None] = mapped_column(Integer)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     failure_reason: Mapped[str | None] = mapped_column(Text)

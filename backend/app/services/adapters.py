@@ -1897,14 +1897,14 @@ def _map_external_record(record: dict[str, Any], config: dict[str, Any]) -> dict
     mapping = config.get("field_mapping") or {}
     defaults = config.get("defaults") or {}
     mapped = {key: value for key, value in defaults.items() if key in ORDER_FIELDS}
-    for field in ORDER_FIELDS:
-        path = mapping.get(field)
+    for order_field in ORDER_FIELDS:
+        path = mapping.get(order_field)
         if path:
             value = _get_path(record, str(path))
         else:
-            value = record.get(field)
+            value = record.get(order_field)
         if value is not None:
-            mapped[field] = value
+            mapped[order_field] = value
     return mapped
 
 

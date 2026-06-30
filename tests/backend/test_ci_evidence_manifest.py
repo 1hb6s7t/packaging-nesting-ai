@@ -454,7 +454,14 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
     dependency_inventory = tmp_path / "ci-dependency-inventory.json"
     evidence_dependency_inventory = evidence_dir / "dependency-inventory.json"
     dependency_review = evidence_dir / "dependency-review-audit.json"
+    dependency_review_verification = evidence_dir / "dependency-review-verification.json"
     release_image_dependency_audit = tmp_path / "ci-release-image-dependency-audit.json"
+    customer_sandbox = evidence_dir / "customer-sandbox-audit.json"
+    notification_channel = evidence_dir / "notification-channel-audit.json"
+    storage_export = evidence_dir / "storage-export-audit.json"
+    conversion_supplier = evidence_dir / "conversion-supplier-audit.json"
+    solver_governance = evidence_dir / "solver-governance-audit.json"
+    external_acceptance = evidence_dir / "external-acceptance-audit.json"
     deployment_compose = evidence_dir / "deployment-compose-audit.json"
     repository_hygiene = evidence_dir / "repository-hygiene-audit.json"
     evidence_manifest = evidence_dir / "release-evidence-pack.json"
@@ -471,15 +478,35 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         "status": "passed",
         "summary": {"dependency_count": 2, "review_required_count": 0},
         "dependencies": [{"name": "fastapi"}, {"name": "vue"}],
+        "sensitive_scan": {"status": "passed", "failed_count": 0, "findings": []},
     }
     write_json(dependency_inventory, inventory_payload)
     write_json(evidence_dependency_inventory, inventory_payload)
     write_json(
         dependency_review,
+        passed_dependency_review_audit(),
+    )
+    write_json(
+        dependency_review_verification,
         {
             "schema_version": 1,
+            "generated_at": "2026-06-29T00:00:00+00:00",
+            "report_path": str(dependency_review.resolve()),
+            "report_status": "passed",
             "status": "passed",
-            "summary": {"review_required_count": 0, "approved_count": 0},
+            "summary": {
+                "review_required_count": 0,
+                "acknowledged_count": 0,
+                "approved_count": 0,
+                "source_error_count": 0,
+                "source_warning_count": 0,
+                "policy_contract_status": "passed",
+                "policy_contract_failed_count": 0,
+                "policy_contract_warning_count": 0,
+                "error_count": 0,
+            },
+            "errors": [],
+            "warnings": [],
         },
     )
     write_json(
@@ -510,7 +537,15 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         {
             "schema_version": 1,
             "status": "passed",
-            "summary": {"check_count": 2, "error_count": 0, "warning_count": 0},
+            "summary": {
+                "check_count": 2,
+                "error_count": 0,
+                "warning_count": 0,
+                "policy_contract_status": "passed",
+                "policy_contract_failed_count": 0,
+                "policy_contract_warning_count": 0,
+            },
+            "sensitive_scan": {"status": "passed", "failed_count": 0, "findings": []},
             "errors": [],
             "warnings": [],
         },
@@ -520,25 +555,118 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         {
             "schema_version": 1,
             "status": "passed",
-            "summary": {"required_pattern_count": 5, "missing_pattern_count": 0},
+            "summary": {
+                "required_pattern_count": 5,
+                "missing_pattern_count": 0,
+                "policy_contract_status": "passed",
+                "policy_contract_failed_count": 0,
+                "policy_contract_warning_count": 0,
+            },
+            "sensitive_scan": {"status": "passed", "failed_count": 0, "findings": []},
             "errors": [],
             "warnings": [],
         },
     )
+    for path, status, summary in [
+        (
+            customer_sandbox,
+            "passed",
+            {
+                "adapter_failed_count": 0,
+                "pack_contract_status": "passed",
+                "pack_contract_failed_count": 0,
+                "sync_strategy_status": "passed",
+                "sync_strategy_failed_count": 0,
+                "business_flow_status": "passed",
+                "business_flow_failed_count": 0,
+            },
+        ),
+        (notification_channel, "passed", {"failed_count": 0, "policy_contract_status": "passed", "policy_contract_failed_count": 0}),
+        (
+            storage_export,
+            "passed",
+            {
+                "failed_count": 0,
+                "storage_contract_status": "passed",
+                "storage_contract_failed_count": 0,
+                "policy_contract_status": "passed",
+                "policy_contract_failed_count": 0,
+            },
+        ),
+        (conversion_supplier, "passed", {"failed_count": 0, "policy_contract_status": "passed", "policy_contract_failed_count": 0}),
+        (solver_governance, "passed", {"failed_count": 0, "policy_contract_status": "passed", "policy_contract_failed_count": 0}),
+        (external_acceptance, "skipped", {"required_area_count": 5, "passed_area_count": 0, "policy_contract_status": "skipped", "policy_contract_failed_count": 0}),
+    ]:
+        write_json(
+            path,
+            {
+                "schema_version": 1,
+                "status": status,
+                "summary": summary,
+                "sensitive_scan": {"status": "passed", "failed_count": 0, "findings": []},
+            },
+        )
 
     evidence_artifacts = [
+        {
+            "name": "production_env_audit",
+            "required": False,
+            "status": "skipped",
+            "relative_path": None,
+            "path": None,
+            "size_bytes": None,
+            "sha256": None,
+            "summary": {"reason": "--env-file was not provided"},
+        },
         artifact_entry("deployment_compose_audit", deployment_compose, required=True),
         artifact_entry("repository_hygiene_audit", repository_hygiene, required=True),
+        artifact_entry("customer_sandbox_audit", customer_sandbox, required=True),
+        artifact_entry("notification_channel_audit", notification_channel, required=True),
+        artifact_entry("storage_export_audit", storage_export, required=True),
+        artifact_entry("conversion_supplier_audit", conversion_supplier, required=True),
+        artifact_entry("solver_governance_audit", solver_governance, required=True),
+        {**artifact_entry("external_acceptance_audit", external_acceptance, required=False), "status": "skipped"},
         artifact_entry("dependency_inventory", evidence_dependency_inventory, required=True),
         artifact_entry("dependency_review_audit", dependency_review, required=False),
     ]
+    evidence_summary = {
+        "artifact_count": len(evidence_artifacts),
+        "required_count": 8,
+        "passed_count": 9,
+        "failed_count": 0,
+        "required_failed_count": 0,
+        "skipped_count": 2,
+        "failed_artifacts": [],
+        "skipped_artifacts": ["production_env_audit", "external_acceptance_audit"],
+        "policy_contract_status": "passed",
+        "policy_contract_failed_count": 0,
+        "policy_contract_warning_count": 0,
+    }
+    evidence_policy_contract = {
+        "status": "passed",
+        "passed_count": 1,
+        "warning_count": 0,
+        "failed_count": 0,
+        "failed_checks": [],
+        "warning_checks": [],
+        "checks": [
+            {
+                "code": "fixture.delivery_contract",
+                "status": "passed",
+                "severity": "info",
+                "message": "fixture release evidence manifest satisfies the delivery contract",
+                "evidence": {},
+            }
+        ],
+    }
     write_json(
         evidence_manifest,
         {
             "schema_version": 1,
             "status": "passed",
-            "summary": {"artifact_count": len(evidence_artifacts), "failed_count": 0, "required_failed_count": 0},
+            "summary": evidence_summary,
             "artifacts": evidence_artifacts,
+            "policy_contract": evidence_policy_contract,
         },
     )
     write_json(
@@ -549,9 +677,9 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
             "manifest_path": str(evidence_manifest.resolve()),
             "summary": {
                 "artifact_count": len(evidence_artifacts),
-                "verified_count": len(evidence_artifacts),
+                "verified_count": 10,
                 "failed_count": 0,
-                "skipped_count": 0,
+                "skipped_count": 1,
                 "manifest_error_count": 0,
                 "failed_artifacts": [],
             },
@@ -566,17 +694,30 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         "verification_path": str(evidence_verification),
         "manifest_exists": True,
         "pack_status": "passed",
-        "pack_summary": {"artifact_count": len(evidence_artifacts), "failed_count": 0, "required_failed_count": 0},
+        "pack_summary": evidence_summary,
         "artifacts": evidence_artifacts,
         "verification_report_exists": True,
         "verification_status": "passed",
         "verification_summary": {
             "artifact_count": len(evidence_artifacts),
-            "verified_count": len(evidence_artifacts),
+            "verified_count": 10,
             "failed_count": 0,
-            "skipped_count": 0,
+            "skipped_count": 1,
             "manifest_error_count": 0,
             "failed_artifacts": [],
+        },
+    }
+    dependency_review_verification_payload = {
+        "path": str(dependency_review_verification),
+        "exists": True,
+        "status": "passed",
+        "report_status": "passed",
+        "report_path": str(dependency_review.resolve()),
+        "summary": {
+            "review_required_count": 0,
+            "acknowledged_count": 0,
+            "approved_count": 0,
+            "error_count": 0,
         },
     }
     write_json(
@@ -587,6 +728,7 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
             "options": {
                 "skip_frontend": True,
                 "skip_evidence_pack": False,
+                "skip_benchmark_gate": False,
                 "skip_smoke": False,
                 "env_file": None,
                 "require_production_env": False,
@@ -597,8 +739,13 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
             },
             "gates": [
                 command_gate("backend release gate tests"),
+                command_gate("benchmark release gate", payload=benchmark_gate_payload()),
                 command_gate("release evidence pack generation", payload=preflight_evidence_payload),
                 command_gate("release evidence pack verification", payload=preflight_evidence_payload),
+                command_gate(
+                    "release evidence dependency review verification",
+                    payload=dependency_review_verification_payload,
+                ),
                 {
                     "name": "API health smoke",
                     "kind": "smoke",
@@ -623,7 +770,7 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
             "schema_version": 1,
             "status": "passed",
             "report_path": str(preflight_report.resolve()),
-            "summary": {"gate_count": 4, "error_count": 0, "warning_count": 0, "failed_gates": []},
+            "summary": {"gate_count": 6, "error_count": 0, "warning_count": 0, "failed_gates": []},
             "errors": [],
             "warnings": [],
         },
@@ -636,6 +783,7 @@ def write_complete_ci_evidence(tmp_path: Path) -> dict[str, Path]:
         "evidence_manifest": evidence_manifest,
         "evidence_verification": evidence_verification,
         "dependency_review_audit": dependency_review,
+        "dependency_review_verification": dependency_review_verification,
         "release_image_dependency_audit": release_image_dependency_audit,
         "preflight_report": preflight_report,
         "preflight_verification": preflight_verification,
@@ -728,15 +876,104 @@ def command_gate(name: str, payload: dict | None = None) -> dict:
     }
 
 
+def benchmark_gate_payload() -> dict:
+    return {
+        "report_path": "tmp/ci-release-evidence/benchmark-release-gate.json",
+        "exists": True,
+        "status": "passed",
+        "thresholds": {
+            "min_quantity_fulfillment_rate": 1.0,
+            "max_p95_runtime_ms": 2000,
+            "max_total_runtime_ms": 15000,
+            "max_peak_rss_mb": None,
+        },
+        "case_count": 6,
+        "summary": {
+            "case_count": 6,
+            "passed_case_count": 6,
+            "failed_case_count": 0,
+            "quantity_levels": [1000, 3000, 5000, 10000, 15000],
+            "planning_modes": ["expanded", "pattern"],
+            "min_quantity_fulfillment_rate": 1.0,
+            "p95_runtime_ms": 50,
+            "total_runtime_ms": 200,
+            "wall_time_ms": 250,
+            "peak_rss_mb": 200.0,
+            "error_count": 0,
+        },
+    }
+
+
 def artifact_entry(name: str, path: Path, *, required: bool) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    summary = dict(payload.get("summary") or {})
+    sensitive_scan = payload.get("sensitive_scan") if isinstance(payload.get("sensitive_scan"), dict) else {}
+    if sensitive_scan:
+        summary["sensitive_scan_status"] = sensitive_scan.get("status")
+        summary["sensitive_scan_failed_count"] = sensitive_scan.get("failed_count", 0)
     return {
         "name": name,
         "required": required,
-        "status": "passed",
+        "status": payload.get("status") or "passed",
         "relative_path": path.name,
         "path": str(path),
         "size_bytes": path.stat().st_size,
         "sha256": sha256_file(path),
+        "summary": summary,
+    }
+
+
+def passed_dependency_review_audit() -> dict:
+    policy_codes = [
+        "schema.version",
+        "inventory.review_required",
+        "review.file.present",
+        "review.document",
+        "review.coverage",
+        "review.decision",
+        "review.current",
+        "review.metadata",
+        "review.scope",
+    ]
+    return {
+        "schema_version": 1,
+        "generated_at": "2026-06-29T00:00:00+00:00",
+        "status": "passed",
+        "inventory_path": None,
+        "review_file": None,
+        "options": {"require_review_file": False},
+        "summary": {
+            "review_required_count": 0,
+            "acknowledged_count": 0,
+            "approved_count": 0,
+            "missing_ack_count": 0,
+            "not_approved_count": 0,
+            "stale_ack_count": 0,
+            "invalid_ack_count": 0,
+            "expired_ack_count": 0,
+            "unmatched_ack_count": 0,
+            "policy_contract_status": "passed",
+            "policy_contract_failed_count": 0,
+            "policy_contract_warning_count": 0,
+        },
+        "sensitive_scan": {"status": "passed", "failed_count": 0, "findings": []},
+        "errors": [],
+        "warnings": [],
+        "missing": [],
+        "not_approved": [],
+        "stale": [],
+        "invalid": [],
+        "expired": [],
+        "unmatched": [],
+        "policy_contract": {
+            "status": "passed",
+            "passed_count": len(policy_codes),
+            "warning_count": 0,
+            "failed_count": 0,
+            "failed_checks": [],
+            "warning_checks": [],
+            "checks": [{"code": code, "status": "passed"} for code in policy_codes],
+        },
     }
 
 

@@ -11,6 +11,10 @@ from typing import Any
 BACKEND_GATE_NAMES = {"backend release gate tests", "backend full test suite"}
 EVIDENCE_GENERATION_GATE = "release evidence pack generation"
 EVIDENCE_VERIFICATION_GATE = "release evidence pack verification"
+PRODUCTION_ENV_VERIFICATION_GATE = "release evidence production env verification"
+DEPENDENCY_REVIEW_VERIFICATION_GATE = "release evidence dependency review verification"
+EXTERNAL_ACCEPTANCE_VERIFICATION_GATE = "release evidence external acceptance verification"
+BENCHMARK_GATE = "benchmark release gate"
 PRODUCTION_ENV_ARTIFACT = "production_env_audit"
 DEPLOYMENT_COMPOSE_ARTIFACT = "deployment_compose_audit"
 DEPENDENCY_REVIEW_ARTIFACT = "dependency_review_audit"
@@ -18,6 +22,18 @@ EXTERNAL_ACCEPTANCE_ARTIFACT = "external_acceptance_audit"
 FRONTEND_GATE = "frontend production build"
 SMOKE_GATE = "API health smoke"
 CLEANUP_NAME = "cleanup pycache"
+NESTED_CONTRACT_FIELDS = {
+    "production_env_audit": ("policy_contract",),
+    "deployment_compose_audit": ("policy_contract",),
+    "repository_hygiene_audit": ("policy_contract",),
+    "customer_sandbox_audit": ("pack_contract", "sync_strategy", "business_flow"),
+    "notification_channel_audit": ("policy_contract",),
+    "storage_export_audit": ("storage_contract", "policy_contract"),
+    "conversion_supplier_audit": ("policy_contract",),
+    "solver_governance_audit": ("policy_contract",),
+    "external_acceptance_audit": ("policy_contract",),
+    "dependency_review_audit": ("policy_contract",),
+}
 
 
 def verify_release_preflight_report(
@@ -26,6 +42,7 @@ def verify_release_preflight_report(
     require_passed_report: bool = True,
     require_evidence_pack: bool = True,
     require_frontend: bool = True,
+    require_benchmark_gate: bool = True,
     require_smoke: bool = True,
     require_dependency_inventory: bool = True,
     require_cleanup: bool = True,
@@ -47,13 +64,20 @@ def verify_release_preflight_report(
         gates = []
         errors.append("report gates must be a list")
 
-    gate_checks = [verify_gate_shape(item) for item in gates]
+    allowed_skipped_gates = allowed_skipped_gate_names(
+        require_evidence_pack=require_evidence_pack,
+        require_frontend=require_frontend,
+        require_benchmark_gate=require_benchmark_gate,
+        require_smoke=require_smoke,
+    )
+    gate_checks = [verify_gate_shape(item, allowed_skipped_gates=allowed_skipped_gates) for item in gates]
     gate_by_name = {item.get("name"): item for item in gates if isinstance(item, dict)}
     for check in gate_checks:
         if check["status"] == "failed":
             errors.extend(check["errors"])
 
     validate_backend_gate(gate_by_name, errors)
+    validate_benchmark_gate(gate_by_name, options, errors, require_benchmark_gate=require_benchmark_gate)
     validate_frontend_gate(gate_by_name, options, errors, require_frontend=require_frontend)
     validate_smoke_gate(gate_by_name, options, errors, require_smoke=require_smoke)
     validate_evidence_gates(gate_by_name, options, errors, require_evidence_pack=require_evidence_pack)
@@ -69,7 +93,7 @@ def verify_release_preflight_report(
     failed_gates = [
         str(gate.get("name") or "<unnamed>")
         for gate in gates
-        if isinstance(gate, dict) and gate.get("status") not in {"passed"}
+        if isinstance(gate, dict) and not gate_status_is_acceptable(gate, allowed_skipped_gates)
     ]
     status = "passed" if not errors else "failed"
     return {
@@ -92,13 +116,47 @@ def verify_release_preflight_report(
     }
 
 
-def verify_gate_shape(gate: Any) -> dict[str, Any]:
+def allowed_skipped_gate_names(
+    *,
+    require_evidence_pack: bool,
+    require_frontend: bool,
+    require_benchmark_gate: bool,
+    require_smoke: bool,
+) -> set[str]:
+    names: set[str] = set()
+    if not require_evidence_pack:
+        names.update(
+            {
+                EVIDENCE_GENERATION_GATE,
+                EVIDENCE_VERIFICATION_GATE,
+                PRODUCTION_ENV_VERIFICATION_GATE,
+                DEPENDENCY_REVIEW_VERIFICATION_GATE,
+                EXTERNAL_ACCEPTANCE_VERIFICATION_GATE,
+            }
+        )
+    if not require_frontend:
+        names.add(FRONTEND_GATE)
+    if not require_benchmark_gate:
+        names.add(BENCHMARK_GATE)
+    if not require_smoke:
+        names.add(SMOKE_GATE)
+    return names
+
+
+def gate_status_is_acceptable(gate: dict[str, Any], allowed_skipped_gates: set[str]) -> bool:
+    status = gate.get("status")
+    name = str(gate.get("name") or "<unnamed>")
+    return status == "passed" or (status == "skipped" and name in allowed_skipped_gates)
+
+
+def verify_gate_shape(gate: Any, *, allowed_skipped_gates: set[str] | None = None) -> dict[str, Any]:
     errors: list[str] = []
     if not isinstance(gate, dict):
         return {"name": "<invalid>", "status": "failed", "errors": ["gate entry must be an object"]}
+    allowed_skipped_gates = allowed_skipped_gates or set()
     name = str(gate.get("name") or "<unnamed>")
     status = gate.get("status")
-    if status != "passed":
+    if not gate_status_is_acceptable(gate, allowed_skipped_gates):
         errors.append(f"{name} status must be passed, got {status or '<missing>'}")
     if not isinstance(gate.get("duration_sec"), (int, float)):
         errors.append(f"{name} duration_sec is missing or invalid")
@@ -123,6 +181,70 @@ def validate_frontend_gate(
         errors.append("frontend build was skipped")
     if require_frontend and FRONTEND_GATE not in gate_by_name:
         errors.append("frontend production build gate is missing")
+
+
+def validate_benchmark_gate(
+    gate_by_name: dict[Any, dict[str, Any]],
+    options: dict[str, Any],
+    errors: list[str],
+    *,
+    require_benchmark_gate: bool,
+) -> None:
+    if require_benchmark_gate and options.get("skip_benchmark_gate"):
+        errors.append("benchmark release gate was skipped")
+    gate = gate_by_name.get(BENCHMARK_GATE)
+    if require_benchmark_gate and gate is None:
+        errors.append("benchmark release gate is missing")
+        return
+    if gate is None:
+        return
+    payload = gate.get("payload")
+    if not isinstance(payload, dict):
+        errors.append("benchmark release gate payload is missing")
+        return
+    if payload.get("error"):
+        errors.append(f"benchmark release gate report could not be read: {payload['error']}")
+    if payload.get("exists") is not True:
+        errors.append("benchmark release gate report was not recorded as existing")
+    if payload.get("status") != "passed":
+        errors.append(f"benchmark release gate status must be passed, got {payload.get('status') or '<missing>'}")
+    thresholds = payload.get("thresholds")
+    if not isinstance(thresholds, dict):
+        errors.append("benchmark release gate thresholds are missing")
+        thresholds = {}
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        errors.append("benchmark release gate summary is missing")
+        return
+    case_count = summary.get("case_count", payload.get("case_count"))
+    if not isinstance(case_count, int) or case_count < 6:
+        errors.append("benchmark release gate must include at least 6 cases")
+    if summary.get("failed_case_count") not in {0, None}:
+        errors.append("benchmark release gate has failed cases")
+    if summary.get("error_count") not in {0, None}:
+        errors.append("benchmark release gate summary has errors")
+    modes = set(summary.get("planning_modes") or [])
+    if not {"pattern", "expanded"}.issubset(modes):
+        errors.append("benchmark release gate must cover pattern and expanded planning modes")
+    quantity_levels = set(summary.get("quantity_levels") or [])
+    if not {1000, 3000, 5000, 10000, 15000}.issubset(quantity_levels):
+        errors.append("benchmark release gate must cover 1000/3000/5000/10000/15000 quantity levels")
+    min_rate = summary.get("min_quantity_fulfillment_rate")
+    required_rate = thresholds.get("min_quantity_fulfillment_rate", 1.0)
+    if not isinstance(min_rate, (int, float)) or min_rate < required_rate:
+        errors.append("benchmark release gate quantity fulfillment is below threshold")
+    p95_runtime = summary.get("p95_runtime_ms")
+    max_p95 = thresholds.get("max_p95_runtime_ms")
+    if isinstance(max_p95, (int, float)) and (not isinstance(p95_runtime, (int, float)) or p95_runtime > max_p95):
+        errors.append("benchmark release gate p95 runtime exceeds threshold")
+    total_runtime = summary.get("total_runtime_ms")
+    max_total = thresholds.get("max_total_runtime_ms")
+    if isinstance(max_total, (int, float)) and (not isinstance(total_runtime, (int, float)) or total_runtime > max_total):
+        errors.append("benchmark release gate total runtime exceeds threshold")
+    max_peak_rss = thresholds.get("max_peak_rss_mb")
+    peak_rss = summary.get("peak_rss_mb")
+    if isinstance(max_peak_rss, (int, float)) and isinstance(peak_rss, (int, float)) and peak_rss > max_peak_rss:
+        errors.append("benchmark release gate peak RSS exceeds threshold")
 
 
 def validate_smoke_gate(
@@ -167,11 +289,13 @@ def validate_evidence_gates(
     require_external_acceptance_artifact = bool(
         options.get("external_acceptance_file") or options.get("require_external_acceptance")
     )
+    generation_payload = generation_gate.get("payload") if isinstance(generation_gate, dict) else None
+    verification_payload = verification_gate.get("payload") if isinstance(verification_gate, dict) else None
     if generation_gate is None:
         errors.append("release evidence pack generation gate is missing")
     else:
         validate_evidence_generation_payload(
-            generation_gate.get("payload"),
+            generation_payload,
             errors,
             require_production_env_artifact=require_production_env_artifact,
             require_dependency_review_artifact=require_dependency_review_artifact,
@@ -181,11 +305,43 @@ def validate_evidence_gates(
         errors.append("release evidence pack verification gate is missing")
     else:
         validate_evidence_verification_payload(
-            verification_gate.get("payload"),
+            verification_payload,
             errors,
             require_production_env_artifact=require_production_env_artifact,
             require_dependency_review_artifact=require_dependency_review_artifact,
             require_external_acceptance_artifact=require_external_acceptance_artifact,
+        )
+    should_verify_production_env = require_production_env_artifact or evidence_artifact_has_passed(
+        generation_payload,
+        PRODUCTION_ENV_ARTIFACT,
+    )
+    should_verify_external_acceptance = require_external_acceptance_artifact or evidence_artifact_has_passed(
+        generation_payload,
+        EXTERNAL_ACCEPTANCE_ARTIFACT,
+    )
+    should_verify_dependency_review = require_dependency_review_artifact or evidence_artifact_has_passed(
+        generation_payload,
+        DEPENDENCY_REVIEW_ARTIFACT,
+    )
+    if should_verify_production_env:
+        validate_evidence_file_verification_gate(
+            gate_by_name.get(PRODUCTION_ENV_VERIFICATION_GATE),
+            errors,
+            display_name="production env",
+            require_rebuilt_report_match=True,
+        )
+    if should_verify_dependency_review:
+        validate_evidence_file_verification_gate(
+            gate_by_name.get(DEPENDENCY_REVIEW_VERIFICATION_GATE),
+            errors,
+            display_name="dependency review",
+        )
+    if should_verify_external_acceptance:
+        validate_evidence_file_verification_gate(
+            gate_by_name.get(EXTERNAL_ACCEPTANCE_VERIFICATION_GATE),
+            errors,
+            display_name="external acceptance",
+            require_no_failed_evidence_checks=True,
         )
 
 
@@ -209,6 +365,7 @@ def validate_evidence_generation_payload(
         errors.append("release evidence pack has required failed artifacts")
     if summary.get("failed_count") not in {0, None}:
         errors.append("release evidence pack has failed artifacts")
+    validate_pack_policy_summary(summary, errors)
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         errors.append("release evidence pack payload is missing artifact summaries")
@@ -226,6 +383,7 @@ def validate_evidence_generation_payload(
                 errors.append(f"evidence artifact {artifact.get('name') or '<unnamed>'} is missing size_bytes")
             if not is_sha256_hex(artifact.get("sha256")):
                 errors.append(f"evidence artifact {artifact.get('name') or '<unnamed>'} is missing valid sha256")
+        validate_evidence_artifact_summary(artifact, errors)
     if require_production_env_artifact:
         validate_named_evidence_artifact(artifacts, PRODUCTION_ENV_ARTIFACT, "production env audit", errors)
     validate_named_evidence_artifact(artifacts, DEPLOYMENT_COMPOSE_ARTIFACT, "deployment compose audit", errors)
@@ -266,6 +424,53 @@ def validate_evidence_verification_payload(
         errors.append("release evidence verification has manifest errors")
 
 
+def validate_pack_policy_summary(summary: dict[str, Any], errors: list[str]) -> None:
+    status = summary.get("policy_contract_status")
+    if status not in {"passed", "warning"}:
+        errors.append(f"release evidence pack policy contract must be passed or warning, got {status or '<missing>'}")
+    if summary.get("policy_contract_failed_count") not in {0, None}:
+        errors.append("release evidence pack policy contract has failed checks")
+
+
+def validate_evidence_artifact_summary(artifact: dict[str, Any], errors: list[str]) -> None:
+    name = str(artifact.get("name") or "<unnamed>")
+    status = artifact.get("status")
+    summary = artifact.get("summary")
+    if status == "passed" and not isinstance(summary, dict):
+        errors.append(f"evidence artifact {name} is missing summary")
+        return
+    if not isinstance(summary, dict):
+        return
+    if status == "passed" and artifact.get("relative_path"):
+        if summary.get("sensitive_scan_status") != "passed":
+            errors.append(f"evidence artifact {name} sensitive scan must be passed")
+        if summary.get("sensitive_scan_failed_count") not in {0, None}:
+            errors.append(f"evidence artifact {name} sensitive scan has failed findings")
+
+    contract_prefixes = NESTED_CONTRACT_FIELDS.get(name, ())
+    for prefix in contract_prefixes:
+        status_field = f"{prefix}_status"
+        failed_count_field = f"{prefix}_failed_count"
+        contract_status = summary.get(status_field)
+        failed_count = summary.get(failed_count_field)
+        if status == "passed":
+            if contract_status not in {"passed", "warning"}:
+                errors.append(
+                    f"evidence artifact {name} {status_field} must be passed or warning, "
+                    f"got {contract_status or '<missing>'}"
+                )
+            if failed_count not in {0, None}:
+                errors.append(f"evidence artifact {name} {failed_count_field} must be 0")
+        elif status == "skipped" and (status_field in summary or failed_count_field in summary):
+            if contract_status not in {"skipped", "passed", "warning", None}:
+                errors.append(
+                    f"evidence artifact {name} {status_field} must be skipped, passed, or warning, "
+                    f"got {contract_status or '<missing>'}"
+                )
+            if failed_count not in {0, None}:
+                errors.append(f"evidence artifact {name} {failed_count_field} must be 0")
+
+
 def validate_named_evidence_artifact(
     artifacts: list[Any],
     artifact_name: str,
@@ -281,6 +486,55 @@ def validate_named_evidence_artifact(
         return
     if artifact.get("status") != "passed":
         errors.append(f"{display_name} artifact must be passed, got {artifact.get('status') or '<missing>'}")
+
+
+def evidence_artifact_has_passed(payload: Any, artifact_name: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        return False
+    return any(
+        isinstance(artifact, dict) and artifact.get("name") == artifact_name and artifact.get("status") == "passed"
+        for artifact in artifacts
+    )
+
+
+def validate_evidence_file_verification_gate(
+    gate: Any,
+    errors: list[str],
+    *,
+    display_name: str,
+    require_rebuilt_report_match: bool = False,
+    require_no_failed_evidence_checks: bool = False,
+) -> None:
+    if not isinstance(gate, dict):
+        errors.append(f"{display_name} verification gate is missing")
+        return
+    payload = gate.get("payload")
+    if not isinstance(payload, dict):
+        errors.append(f"{display_name} verification payload is missing")
+        return
+    if payload.get("error"):
+        errors.append(f"{display_name} verification report could not be read: {payload['error']}")
+    if payload.get("exists") is not True:
+        errors.append(f"{display_name} verification report was not recorded as existing")
+    if payload.get("status") != "passed":
+        errors.append(f"{display_name} verification status must be passed, got {payload.get('status') or '<missing>'}")
+    if not payload.get("report_path"):
+        errors.append(f"{display_name} verification report_path is required")
+    if payload.get("report_status") != "passed":
+        errors.append(f"{display_name} verification report_status must be passed")
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        errors.append(f"{display_name} verification summary is missing")
+        return
+    if summary.get("error_count") not in {0, None}:
+        errors.append(f"{display_name} verification summary has errors")
+    if require_rebuilt_report_match and summary.get("rebuilt_report_match") is not True:
+        errors.append(f"{display_name} verification must match the supplied env file")
+    if require_no_failed_evidence_checks and summary.get("failed_evidence_check_count") not in {0, None}:
+        errors.append(f"{display_name} verification has failed evidence checks")
 
 
 def validate_cleanup(cleanup: Any, errors: list[str], *, require_cleanup: bool) -> None:
@@ -378,6 +632,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-failed-report", action="store_true", help="Do not require release report passed=true.")
     parser.add_argument("--allow-skipped-evidence-pack", action="store_true", help="Do not require evidence pack gates.")
     parser.add_argument("--allow-skipped-frontend", action="store_true", help="Do not require frontend build gate.")
+    parser.add_argument("--allow-skipped-benchmark-gate", action="store_true", help="Do not require benchmark gate.")
     parser.add_argument("--allow-skipped-smoke", action="store_true", help="Do not require API smoke gate.")
     parser.add_argument("--allow-missing-inventory", action="store_true", help="Do not require dependency inventory summary.")
     parser.add_argument("--allow-skipped-cleanup", action="store_true", help="Do not require cleanup evidence.")
@@ -392,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         require_passed_report=not args.allow_failed_report,
         require_evidence_pack=not args.allow_skipped_evidence_pack,
         require_frontend=not args.allow_skipped_frontend,
+        require_benchmark_gate=not args.allow_skipped_benchmark_gate,
         require_smoke=not args.allow_skipped_smoke,
         require_dependency_inventory=not args.allow_missing_inventory,
         require_cleanup=not args.allow_skipped_cleanup,

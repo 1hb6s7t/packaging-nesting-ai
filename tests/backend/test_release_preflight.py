@@ -27,8 +27,10 @@ def test_release_preflight_default_steps_cover_release_gates() -> None:
 
     assert [step.name for step in steps] == [
         "backend release gate tests",
+        "benchmark release gate",
         "release evidence pack generation",
         "release evidence pack verification",
+        "release evidence dependency review verification",
         "frontend production build",
     ]
     backend_command = steps[0].command
@@ -39,6 +41,15 @@ def test_release_preflight_default_steps_cover_release_gates() -> None:
     assert "tests/backend/test_config.py" in backend_command
     assert "tests/backend/test_operation_logs.py" in backend_command
     assert "tests/backend/test_adapters.py" in backend_command
+    assert "tests/backend/test_ai_tools.py" in backend_command
+    assert "tests/backend/test_solution_approval.py" in backend_command
+    assert "tests/backend/test_solver_placeholders.py" in backend_command
+    assert "tests/backend/test_external_solver_adapters.py" in backend_command
+    assert "tests/backend/test_batch_planning.py" in backend_command
+    assert "tests/backend/test_benchmark.py" in backend_command
+    assert "tests/backend/test_benchmark_importers.py" in backend_command
+    assert "tests/backend/test_benchmark_release_gate.py" in backend_command
+    assert "tests/backend/test_benchmark_stress_787.py" in backend_command
     assert "tests/backend/test_customer_sandbox_pack.py" in backend_command
     assert "tests/backend/test_customer_sandbox_audit.py" in backend_command
     assert "tests/backend/test_conversion_supplier_audit.py" in backend_command
@@ -47,12 +58,16 @@ def test_release_preflight_default_steps_cover_release_gates() -> None:
     assert "tests/backend/test_notification_channel_audit.py" in backend_command
     assert "tests/backend/test_storage_export_audit.py" in backend_command
     assert "tests/backend/test_external_acceptance_audit.py" in backend_command
+    assert "tests/backend/test_verify_external_acceptance_audit.py" in backend_command
     assert "tests/backend/test_deployment_compose.py" in backend_command
     assert "tests/backend/test_deployment_compose_audit.py" in backend_command
     assert "tests/backend/test_route_auth_surface.py" in backend_command
+    assert "tests/backend/test_verify_production_env_audit.py" in backend_command
     assert "tests/backend/test_dependency_review_audit.py" in backend_command
     assert "tests/backend/test_dependency_review_template.py" in backend_command
+    assert "tests/backend/test_verify_dependency_review_audit.py" in backend_command
     assert "tests/backend/test_release_image_dependency_audit.py" in backend_command
+    assert "tests/backend/test_verify_release_image_dependency_audit.py" in backend_command
     assert "tests/backend/test_release_handoff_bundle.py" in backend_command
     assert "tests/backend/test_verify_release_handoff_bundle.py" in backend_command
     assert "tests/backend/test_go_live_readiness_audit.py" in backend_command
@@ -64,23 +79,36 @@ def test_release_preflight_default_steps_cover_release_gates() -> None:
     assert "tests/backend/test_verify_release_preflight.py" in backend_command
     assert steps[0].env is not None
     assert str(REPO_ROOT / "backend") in steps[0].env["PYTHONPATH"].split(module.os.pathsep)
-    assert steps[1].command[:3] == [sys.executable, "scripts/release_evidence_pack.py", "--output-dir"]
+    assert steps[0].timeout_sec == 240
+    assert steps[1].command[:3] == [sys.executable, "scripts/benchmark_release_gate.py", "--output"]
+    assert str(Path("tmp/release-preflight-evidence") / "benchmark-release-gate.json") in steps[1].command
     assert steps[1].cwd == REPO_ROOT
-    assert steps[2].command[:3] == [sys.executable, "scripts/verify_release_evidence_pack.py", "--manifest"]
-    assert "--output" in steps[2].command
+    assert steps[2].command[:3] == [sys.executable, "scripts/release_evidence_pack.py", "--output-dir"]
     assert steps[2].cwd == REPO_ROOT
-    assert steps[3].command == [module.npm_command(), "run", "build"]
-    assert steps[3].cwd == REPO_ROOT / "frontend"
+    assert steps[3].command[:3] == [sys.executable, "scripts/verify_release_evidence_pack.py", "--manifest"]
+    assert "--output" in steps[3].command
+    assert steps[3].cwd == REPO_ROOT
+    assert steps[4].command[:3] == [sys.executable, "scripts/verify_dependency_review_audit.py", "--report"]
+    assert "--allow-non-passed-report" in steps[4].command
+    assert steps[4].cwd == REPO_ROOT
+    assert steps[5].command == [module.npm_command(), "run", "build"]
+    assert steps[5].cwd == REPO_ROOT / "frontend"
 
 
 def test_release_preflight_full_backend_can_skip_frontend() -> None:
     module = load_release_preflight_module()
 
-    steps = module.build_subprocess_steps(full_backend=True, skip_frontend=True, skip_evidence_pack=True)
+    steps = module.build_subprocess_steps(
+        full_backend=True,
+        skip_frontend=True,
+        skip_benchmark_gate=True,
+        skip_evidence_pack=True,
+    )
 
     assert len(steps) == 1
     assert steps[0].name == "backend full test suite"
     assert steps[0].command == [sys.executable, "-m", "pytest", "-q", "tests/backend"]
+    assert steps[0].timeout_sec == 420
 
 
 def test_release_preflight_can_skip_evidence_pack_or_use_custom_output_dir() -> None:
@@ -100,14 +128,18 @@ def test_release_preflight_can_skip_evidence_pack_or_use_custom_output_dir() -> 
         evidence_output_dir=custom_output_dir,
     )
 
-    assert [step.name for step in skipped_steps] == ["backend release gate tests"]
+    assert [step.name for step in skipped_steps] == ["backend release gate tests", "benchmark release gate"]
     assert [step.name for step in evidence_steps] == [
         "backend release gate tests",
+        "benchmark release gate",
         "release evidence pack generation",
         "release evidence pack verification",
+        "release evidence dependency review verification",
     ]
-    assert str(custom_output_dir) in evidence_steps[1].command
-    assert str(custom_output_dir / "release-evidence-pack.json") in evidence_steps[2].command
+    assert str(custom_output_dir / "benchmark-release-gate.json") in evidence_steps[1].command
+    assert str(custom_output_dir) in evidence_steps[2].command
+    assert str(custom_output_dir / "release-evidence-pack.json") in evidence_steps[3].command
+    assert str(custom_output_dir / "dependency-review-audit.json") in evidence_steps[4].command
 
 
 def test_release_preflight_passes_dependency_review_options_to_evidence_pack() -> None:
@@ -122,10 +154,22 @@ def test_release_preflight_passes_dependency_review_options_to_evidence_pack() -
         require_dependency_review=True,
     )
 
-    command = steps[1].command
+    command = steps[2].command
     assert "--dependency-review-file" in command
     assert str(review_file) in command
     assert "--require-dependency-review" in command
+    assert [step.name for step in steps] == [
+        "backend release gate tests",
+        "benchmark release gate",
+        "release evidence pack generation",
+        "release evidence pack verification",
+        "release evidence dependency review verification",
+    ]
+    verification_command = steps[4].command
+    assert verification_command[:3] == [sys.executable, "scripts/verify_dependency_review_audit.py", "--report"]
+    assert str(Path("tmp/release-preflight-evidence") / "dependency-review-audit.json") in verification_command
+    assert str(Path("tmp/release-preflight-evidence") / "dependency-review-verification.json") in verification_command
+    assert "--allow-non-passed-report" not in verification_command
 
 
 def test_release_preflight_passes_external_acceptance_options_to_evidence_pack() -> None:
@@ -140,10 +184,24 @@ def test_release_preflight_passes_external_acceptance_options_to_evidence_pack()
         require_external_acceptance=True,
     )
 
-    command = steps[1].command
+    command = steps[2].command
     assert "--external-acceptance-file" in command
     assert str(acceptance_file) in command
     assert "--require-external-acceptance" in command
+    assert [step.name for step in steps] == [
+        "backend release gate tests",
+        "benchmark release gate",
+        "release evidence pack generation",
+        "release evidence pack verification",
+        "release evidence dependency review verification",
+        "release evidence external acceptance verification",
+    ]
+    dependency_verification_command = steps[4].command
+    assert "--allow-non-passed-report" in dependency_verification_command
+    verification_command = steps[5].command
+    assert verification_command[:3] == [sys.executable, "scripts/verify_external_acceptance_audit.py", "--report"]
+    assert str(Path("tmp/release-preflight-evidence") / "external-acceptance-audit.json") in verification_command
+    assert str(Path("tmp/release-preflight-evidence") / "external-acceptance-verification.json") in verification_command
 
 
 def test_release_preflight_passes_production_env_options_to_evidence_pack() -> None:
@@ -158,10 +216,25 @@ def test_release_preflight_passes_production_env_options_to_evidence_pack() -> N
         require_production_env=True,
     )
 
-    command = steps[1].command
+    command = steps[2].command
     assert "--env-file" in command
     assert str(env_file) in command
     assert "--require-production-env" in command
+    assert [step.name for step in steps] == [
+        "backend release gate tests",
+        "benchmark release gate",
+        "release evidence pack generation",
+        "release evidence pack verification",
+        "release evidence production env verification",
+        "release evidence dependency review verification",
+    ]
+    verification_command = steps[4].command
+    assert verification_command[:3] == [sys.executable, "scripts/verify_production_env_audit.py", "--report"]
+    assert str(Path("tmp/release-preflight-evidence") / "production-env-audit.json") in verification_command
+    assert "--env-file" in verification_command
+    assert str(env_file) in verification_command
+    assert str(Path("tmp/release-preflight-evidence") / "production-env-verification.json") in verification_command
+    assert "--allow-non-passed-report" in steps[5].command
 
 
 def test_release_preflight_uses_auto_smoke_port_by_default() -> None:
@@ -170,6 +243,7 @@ def test_release_preflight_uses_auto_smoke_port_by_default() -> None:
     args = module.parse_args([])
 
     assert args.smoke_port == 0
+    assert args.skip_benchmark_gate is False
     assert args.skip_evidence_pack is False
     assert args.evidence_output_dir == Path("tmp/release-preflight-evidence")
     assert args.env_file is None
@@ -238,6 +312,7 @@ def test_release_preflight_report_contains_gate_and_cleanup_evidence() -> None:
     assert report["schema_version"] == 1
     assert report["repo_root"] == str(REPO_ROOT)
     assert report["options"]["skip_frontend"] is True
+    assert report["options"]["skip_benchmark_gate"] is False
     assert report["options"]["skip_evidence_pack"] is False
     assert report["options"]["evidence_output_dir"] == str(Path("tmp/release-preflight-evidence"))
     assert report["options"]["env_file"] is None
@@ -485,9 +560,59 @@ def test_release_preflight_evidence_gate_payloads_include_manifest_and_verificat
         json.dumps(verification, ensure_ascii=False),
         encoding="utf-8",
     )
+    production_env_verification = {
+        "schema_version": 1,
+        "status": "passed",
+        "report_status": "passed",
+        "report_path": str(output_dir / "production-env-audit.json"),
+        "summary": {"rebuilt_report_match": True, "error_count": 0},
+    }
+    (output_dir / "production-env-verification.json").write_text(
+        json.dumps(production_env_verification, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    dependency_review_verification = {
+        "schema_version": 1,
+        "status": "passed",
+        "report_status": "passed",
+        "report_path": str(output_dir / "dependency-review-audit.json"),
+        "summary": {"approved_count": 2, "error_count": 0},
+    }
+    (output_dir / "dependency-review-verification.json").write_text(
+        json.dumps(dependency_review_verification, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    benchmark_gate = {
+        "schema_version": 1,
+        "status": "passed",
+        "thresholds": {"min_quantity_fulfillment_rate": 1.0, "max_p95_runtime_ms": 2000},
+        "summary": {
+            "case_count": 6,
+            "passed_case_count": 6,
+            "failed_case_count": 0,
+            "quantity_levels": [1000, 3000, 5000, 10000, 15000],
+            "planning_modes": ["expanded", "pattern"],
+            "min_quantity_fulfillment_rate": 1.0,
+            "p95_runtime_ms": 50,
+            "total_runtime_ms": 200,
+            "error_count": 0,
+        },
+        "cases": [{"case_id": "pattern_787x1092_qty_1000"}],
+    }
+    (output_dir / "benchmark-release-gate.json").write_text(
+        json.dumps(benchmark_gate, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
+    benchmark_payload = module.build_benchmark_gate_payload(output_dir)
     generation_payload = module.build_evidence_pack_manifest_payload(output_dir)
     verification_payload = module.build_evidence_pack_verification_payload(output_dir)
+    production_env_verification_payload = module.build_evidence_verification_file_payload(
+        output_dir / "production-env-verification.json"
+    )
+    dependency_review_verification_payload = module.build_evidence_verification_file_payload(
+        output_dir / "dependency-review-verification.json"
+    )
     enriched = module.enrich_preflight_gate_result(
         module.GateResult(
             name="release evidence pack verification",
@@ -497,7 +622,38 @@ def test_release_preflight_evidence_gate_payloads_include_manifest_and_verificat
         ),
         evidence_output_dir=output_dir,
     )
+    production_env_enriched = module.enrich_preflight_gate_result(
+        module.GateResult(
+            name="release evidence production env verification",
+            kind="command",
+            status="passed",
+            duration_sec=0.1,
+        ),
+        evidence_output_dir=output_dir,
+    )
+    dependency_review_enriched = module.enrich_preflight_gate_result(
+        module.GateResult(
+            name="release evidence dependency review verification",
+            kind="command",
+            status="passed",
+            duration_sec=0.1,
+        ),
+        evidence_output_dir=output_dir,
+    )
+    benchmark_enriched = module.enrich_preflight_gate_result(
+        module.GateResult(
+            name="benchmark release gate",
+            kind="command",
+            status="passed",
+            duration_sec=0.1,
+        ),
+        evidence_output_dir=output_dir,
+    )
 
+    assert benchmark_payload["exists"] is True
+    assert benchmark_payload["status"] == "passed"
+    assert benchmark_payload["summary"]["case_count"] == 6
+    assert benchmark_payload["case_count"] == 1
     assert generation_payload["manifest_exists"] is True
     assert generation_payload["pack_status"] == "passed"
     assert generation_payload["pack_summary"]["artifact_count"] == 2
@@ -509,6 +665,7 @@ def test_release_preflight_evidence_gate_payloads_include_manifest_and_verificat
             "relative_path": "customer-sandbox-audit.json",
             "size_bytes": 123,
             "sha256": "a" * 64,
+            "summary": {"sensitive_scan_status": "passed"},
         },
         {
             "name": "production_env_audit",
@@ -517,13 +674,47 @@ def test_release_preflight_evidence_gate_payloads_include_manifest_and_verificat
             "relative_path": None,
             "size_bytes": None,
             "sha256": None,
+            "summary": {},
         },
     ]
     assert verification_payload["verification_report_exists"] is True
     assert verification_payload["verification_status"] == "passed"
     assert verification_payload["verification_summary"]["verified_count"] == 1
+    assert production_env_verification_payload["exists"] is True
+    assert production_env_verification_payload["status"] == "passed"
+    assert production_env_verification_payload["report_status"] == "passed"
+    assert production_env_verification_payload["summary"]["rebuilt_report_match"] is True
+    assert dependency_review_verification_payload["exists"] is True
+    assert dependency_review_verification_payload["status"] == "passed"
+    assert dependency_review_verification_payload["summary"]["approved_count"] == 2
     assert enriched.payload is not None
     assert enriched.payload["verification_summary"]["manifest_error_count"] == 0
+    assert production_env_enriched.payload is not None
+    assert production_env_enriched.payload["summary"]["error_count"] == 0
+    assert dependency_review_enriched.payload is not None
+    assert dependency_review_enriched.payload["report_status"] == "passed"
+    assert benchmark_enriched.payload is not None
+    assert benchmark_enriched.payload["summary"]["p95_runtime_ms"] == 50
+
+
+def test_release_preflight_compacts_evidence_artifact_summary_to_scalars() -> None:
+    module = load_release_preflight_module()
+
+    compacted = module.compact_evidence_artifact_summary(
+        {
+            "policy_contract_status": "passed",
+            "policy_contract_failed_count": 0,
+            "review_required_count": 2,
+            "review_required": [{"name": "celery"}],
+            "nested": {"status": "passed"},
+        }
+    )
+
+    assert compacted == {
+        "policy_contract_status": "passed",
+        "policy_contract_failed_count": 0,
+        "review_required_count": 2,
+    }
 
 
 def test_release_preflight_clean_pycache_covers_backend_tests_and_scripts(tmp_path, monkeypatch) -> None:

@@ -338,7 +338,10 @@ def parse_polygon(
     if not artwork:
         raise HTTPException(status_code=404, detail="artwork not found")
     if artwork["source_format"] not in {"svg", "dxf"}:
-        raise HTTPException(status_code=422, detail="MVP parser currently supports SVG/DXF geometry")
+        raise HTTPException(
+            status_code=422,
+            detail="Direct geometry parsing supports SVG/DXF; submit this format through the conversion workflow first.",
+        )
     try:
         content = artwork.get("content") or repository.load_artwork_content(db, artwork_id)
         if content is None:

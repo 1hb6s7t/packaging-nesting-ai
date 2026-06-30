@@ -31,6 +31,15 @@ TARGETED_BACKEND_TESTS = [
     "tests/backend/test_config.py",
     "tests/backend/test_operation_logs.py",
     "tests/backend/test_adapters.py",
+    "tests/backend/test_ai_tools.py",
+    "tests/backend/test_solution_approval.py",
+    "tests/backend/test_solver_placeholders.py",
+    "tests/backend/test_external_solver_adapters.py",
+    "tests/backend/test_batch_planning.py",
+    "tests/backend/test_benchmark.py",
+    "tests/backend/test_benchmark_importers.py",
+    "tests/backend/test_benchmark_release_gate.py",
+    "tests/backend/test_benchmark_stress_787.py",
     "tests/backend/test_customer_sandbox_pack.py",
     "tests/backend/test_customer_sandbox_audit.py",
     "tests/backend/test_conversion_supplier_audit.py",
@@ -39,14 +48,18 @@ TARGETED_BACKEND_TESTS = [
     "tests/backend/test_notification_channel_audit.py",
     "tests/backend/test_storage_export_audit.py",
     "tests/backend/test_external_acceptance_audit.py",
+    "tests/backend/test_verify_external_acceptance_audit.py",
     "tests/backend/test_deployment_compose.py",
     "tests/backend/test_deployment_compose_audit.py",
     "tests/backend/test_repository_hygiene_audit.py",
     "tests/backend/test_route_auth_surface.py",
     "tests/backend/test_production_env_audit.py",
+    "tests/backend/test_verify_production_env_audit.py",
     "tests/backend/test_dependency_review_audit.py",
     "tests/backend/test_dependency_review_template.py",
+    "tests/backend/test_verify_dependency_review_audit.py",
     "tests/backend/test_release_image_dependency_audit.py",
+    "tests/backend/test_verify_release_image_dependency_audit.py",
     "tests/backend/test_release_handoff_bundle.py",
     "tests/backend/test_verify_release_handoff_bundle.py",
     "tests/backend/test_go_live_readiness_audit.py",
@@ -99,6 +112,7 @@ def build_subprocess_steps(
     *,
     full_backend: bool,
     skip_frontend: bool,
+    skip_benchmark_gate: bool = False,
     skip_evidence_pack: bool = False,
     evidence_output_dir: Path = Path("tmp/release-preflight-evidence"),
     env_file: Path | None = None,
@@ -115,9 +129,24 @@ def build_subprocess_steps(
             command=[sys.executable, "-m", "pytest", "-q", *backend_tests],
             cwd=REPO_ROOT,
             env=backend_env(),
-            timeout_sec=240 if full_backend else 120,
+            timeout_sec=420 if full_backend else 240,
         )
     ]
+    if not skip_benchmark_gate:
+        steps.append(
+            CommandStep(
+                name="benchmark release gate",
+                command=[
+                    sys.executable,
+                    "scripts/benchmark_release_gate.py",
+                    "--output",
+                    str(evidence_output_dir / "benchmark-release-gate.json"),
+                ],
+                cwd=REPO_ROOT,
+                env=backend_env(),
+                timeout_sec=60,
+            )
+        )
     if not skip_evidence_pack:
         evidence_manifest_path = evidence_output_dir / "release-evidence-pack.json"
         evidence_generation_command = [
@@ -161,6 +190,58 @@ def build_subprocess_steps(
                 ),
             ]
         )
+        if env_file is not None:
+            steps.append(
+                CommandStep(
+                    name="release evidence production env verification",
+                    command=[
+                        sys.executable,
+                        "scripts/verify_production_env_audit.py",
+                        "--report",
+                        str(evidence_output_dir / "production-env-audit.json"),
+                        "--env-file",
+                        str(env_file),
+                        "--output",
+                        str(evidence_output_dir / "production-env-verification.json"),
+                    ],
+                    cwd=REPO_ROOT,
+                    timeout_sec=60,
+                )
+            )
+        dependency_review_verification_command = [
+            sys.executable,
+            "scripts/verify_dependency_review_audit.py",
+            "--report",
+            str(evidence_output_dir / "dependency-review-audit.json"),
+            "--output",
+            str(evidence_output_dir / "dependency-review-verification.json"),
+        ]
+        if dependency_review_file is None and not require_dependency_review:
+            dependency_review_verification_command.append("--allow-non-passed-report")
+        steps.append(
+            CommandStep(
+                name="release evidence dependency review verification",
+                command=dependency_review_verification_command,
+                cwd=REPO_ROOT,
+                timeout_sec=60,
+            )
+        )
+        if external_acceptance_file is not None:
+            steps.append(
+                CommandStep(
+                    name="release evidence external acceptance verification",
+                    command=[
+                        sys.executable,
+                        "scripts/verify_external_acceptance_audit.py",
+                        "--report",
+                        str(evidence_output_dir / "external-acceptance-audit.json"),
+                        "--output",
+                        str(evidence_output_dir / "external-acceptance-verification.json"),
+                    ],
+                    cwd=REPO_ROOT,
+                    timeout_sec=60,
+                )
+            )
     if not skip_frontend:
         steps.append(
             CommandStep(
@@ -207,10 +288,33 @@ def run_command_step(step: CommandStep) -> GateResult:
 
 
 def enrich_preflight_gate_result(result: GateResult, *, evidence_output_dir: Path) -> GateResult:
+    if result.name == "benchmark release gate":
+        return replace(result, payload=build_benchmark_gate_payload(evidence_output_dir))
     if result.name == "release evidence pack generation":
         return replace(result, payload=build_evidence_pack_manifest_payload(evidence_output_dir))
     if result.name == "release evidence pack verification":
         return replace(result, payload=build_evidence_pack_verification_payload(evidence_output_dir))
+    if result.name == "release evidence production env verification":
+        return replace(
+            result,
+            payload=build_evidence_verification_file_payload(
+                evidence_output_dir / "production-env-verification.json"
+            ),
+        )
+    if result.name == "release evidence dependency review verification":
+        return replace(
+            result,
+            payload=build_evidence_verification_file_payload(
+                evidence_output_dir / "dependency-review-verification.json"
+            ),
+        )
+    if result.name == "release evidence external acceptance verification":
+        return replace(
+            result,
+            payload=build_evidence_verification_file_payload(
+                evidence_output_dir / "external-acceptance-verification.json"
+            ),
+        )
     return result
 
 
@@ -238,6 +342,27 @@ def build_evidence_pack_manifest_payload(evidence_output_dir: Path) -> dict[str,
     return payload
 
 
+def build_benchmark_gate_payload(evidence_output_dir: Path) -> dict[str, Any]:
+    output_dir = evidence_output_dir if evidence_output_dir.is_absolute() else REPO_ROOT / evidence_output_dir
+    report_path = output_dir / "benchmark-release-gate.json"
+    payload: dict[str, Any] = {"report_path": str(report_path), "exists": report_path.is_file()}
+    report = read_json_if_present(report_path)
+    if report.get("error"):
+        payload["error"] = report["error"]
+        return payload
+    if report.get("exists"):
+        data = report["data"]
+        payload.update(
+            {
+                "status": data.get("status"),
+                "thresholds": data.get("thresholds"),
+                "summary": data.get("summary"),
+                "case_count": len(data.get("cases") or []),
+            }
+        )
+    return payload
+
+
 def build_evidence_pack_verification_payload(evidence_output_dir: Path) -> dict[str, Any]:
     output_dir, manifest_path, verification_path = evidence_pack_paths(evidence_output_dir)
     payload: dict[str, Any] = build_evidence_pack_manifest_payload(evidence_output_dir)
@@ -259,6 +384,29 @@ def build_evidence_pack_verification_payload(evidence_output_dir: Path) -> dict[
             {
                 "verification_status": data.get("status"),
                 "verification_summary": data.get("summary"),
+            }
+        )
+    return payload
+
+
+def build_evidence_verification_file_payload(path: Path) -> dict[str, Any]:
+    resolved_path = path if path.is_absolute() else REPO_ROOT / path
+    payload: dict[str, Any] = {
+        "path": str(resolved_path),
+        "exists": resolved_path.is_file(),
+    }
+    verification = read_json_if_present(resolved_path)
+    if verification.get("error"):
+        payload["error"] = verification["error"]
+        return payload
+    if verification.get("exists"):
+        data = verification["data"]
+        payload.update(
+            {
+                "status": data.get("status"),
+                "report_status": data.get("report_status"),
+                "report_path": data.get("report_path"),
+                "summary": data.get("summary"),
             }
         )
     return payload
@@ -297,8 +445,19 @@ def compact_evidence_artifacts(artifacts: Any) -> list[dict[str, Any]]:
                 "relative_path": item.get("relative_path"),
                 "size_bytes": item.get("size_bytes"),
                 "sha256": item.get("sha256"),
+                "summary": compact_evidence_artifact_summary(item.get("summary")),
             }
         )
+    return compacted
+
+
+def compact_evidence_artifact_summary(summary: Any) -> dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {}
+    compacted: dict[str, Any] = {}
+    for key, value in summary.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            compacted[str(key)] = value
     return compacted
 
 
@@ -446,6 +605,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run non-customer-dependent release preflight gates.")
     parser.add_argument("--full-backend", action="store_true", help="Run all backend tests instead of the targeted gate.")
     parser.add_argument("--skip-frontend", action="store_true", help="Skip npm production build.")
+    parser.add_argument("--skip-benchmark-gate", action="store_true", help="Skip deterministic benchmark release gate.")
     parser.add_argument("--skip-evidence-pack", action="store_true", help="Skip local release evidence pack generation and verification.")
     parser.add_argument(
         "--evidence-output-dir",
@@ -529,6 +689,7 @@ def build_release_report(
         "options": {
             "full_backend": bool(args.full_backend),
             "skip_frontend": bool(args.skip_frontend),
+            "skip_benchmark_gate": bool(args.skip_benchmark_gate),
             "skip_evidence_pack": bool(args.skip_evidence_pack),
             "evidence_output_dir": str(args.evidence_output_dir),
             "env_file": str(args.env_file) if args.env_file else None,
@@ -673,6 +834,7 @@ def main(argv: list[str] | None = None) -> int:
     for step in build_subprocess_steps(
         full_backend=args.full_backend,
         skip_frontend=args.skip_frontend,
+        skip_benchmark_gate=args.skip_benchmark_gate,
         skip_evidence_pack=args.skip_evidence_pack,
         evidence_output_dir=args.evidence_output_dir,
         env_file=args.env_file,

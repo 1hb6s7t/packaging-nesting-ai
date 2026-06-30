@@ -191,6 +191,28 @@ def ensure_sqlite_schema_compat() -> None:
         "recipient_group_id": "ALTER TABLE message_template ADD COLUMN recipient_group_id VARCHAR(64)",
         "escalation_group_id": "ALTER TABLE message_template ADD COLUMN escalation_group_id VARCHAR(64)",
     }
+    benchmark_run_columns = (
+        {column["name"] for column in inspector.get_columns("benchmark_run")} if "benchmark_run" in table_names else set()
+    )
+    benchmark_run_ddl = {
+        "planning_mode": "ALTER TABLE benchmark_run ADD COLUMN planning_mode VARCHAR(40) NOT NULL DEFAULT 'single_sheet'",
+        "hard_rule_pass": "ALTER TABLE benchmark_run ADD COLUMN hard_rule_pass BOOLEAN NOT NULL DEFAULT 0",
+        "quantity_fulfillment_rate": (
+            "ALTER TABLE benchmark_run ADD COLUMN quantity_fulfillment_rate FLOAT NOT NULL DEFAULT 0"
+        ),
+        "requested_units": "ALTER TABLE benchmark_run ADD COLUMN requested_units INTEGER NOT NULL DEFAULT 0",
+        "produced_units": "ALTER TABLE benchmark_run ADD COLUMN produced_units INTEGER NOT NULL DEFAULT 0",
+        "shortage_units": "ALTER TABLE benchmark_run ADD COLUMN shortage_units INTEGER NOT NULL DEFAULT 0",
+        "overproduction_units": "ALTER TABLE benchmark_run ADD COLUMN overproduction_units INTEGER NOT NULL DEFAULT 0",
+        "units_per_sheet": "ALTER TABLE benchmark_run ADD COLUMN units_per_sheet INTEGER NOT NULL DEFAULT 0",
+        "sheets_used": "ALTER TABLE benchmark_run ADD COLUMN sheets_used INTEGER NOT NULL DEFAULT 0",
+        "peak_rss_mb": "ALTER TABLE benchmark_run ADD COLUMN peak_rss_mb FLOAT",
+        "export_ok": "ALTER TABLE benchmark_run ADD COLUMN export_ok BOOLEAN NOT NULL DEFAULT 0",
+        "case_score": "ALTER TABLE benchmark_run ADD COLUMN case_score FLOAT NOT NULL DEFAULT 0",
+        "baseline_delta_utilization_rate": "ALTER TABLE benchmark_run ADD COLUMN baseline_delta_utilization_rate FLOAT",
+        "p95_runtime_ms": "ALTER TABLE benchmark_run ADD COLUMN p95_runtime_ms INTEGER",
+        "metrics_json": "ALTER TABLE benchmark_run ADD COLUMN metrics_json JSON NOT NULL DEFAULT '{}'",
+    }
     with engine.begin() as connection:
         for column_name, ddl in work_task_ddl.items():
             if "work_task" in table_names and column_name not in work_task_columns:
@@ -209,6 +231,9 @@ def ensure_sqlite_schema_compat() -> None:
                 connection.execute(text(ddl))
         for column_name, ddl in message_template_ddl.items():
             if "message_template" in table_names and column_name not in message_template_columns:
+                connection.execute(text(ddl))
+        for column_name, ddl in benchmark_run_ddl.items():
+            if "benchmark_run" in table_names and column_name not in benchmark_run_columns:
                 connection.execute(text(ddl))
         if "operation_log" in table_names:
             existing_indexes = {item["name"] for item in inspector.get_indexes("operation_log")}

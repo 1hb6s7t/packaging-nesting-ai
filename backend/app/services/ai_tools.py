@@ -52,16 +52,27 @@ AI_TOOL_DEFINITIONS = [
                 "candidate_order_ids": {"type": "array", "items": {"type": "string"}},
             },
         },
+        read_only=False,
+        mutates=True,
+        reversible=False,
+        blocked_in_production=True,
+        requires_human_approval=True,
     ),
     AiToolDefinition(
         name="run_solver",
         description="Run an approved SolverAdapter against a stored NestingJob.",
         parameters={"type": "object", "required": ["job_id"], "properties": {"job_id": {"type": "string"}, "solver_name": {"type": "string"}}},
+        read_only=False,
+        mutates=True,
+        reversible=True,
     ),
     AiToolDefinition(
         name="validate_solution",
         description="Run Validator checks. Required before export.",
         parameters={"type": "object", "required": ["solution_id"], "properties": {"solution_id": {"type": "string"}}},
+        read_only=False,
+        mutates=True,
+        reversible=True,
     ),
     AiToolDefinition(
         name="compare_solutions",
@@ -82,16 +93,31 @@ AI_TOOL_DEFINITIONS = [
         name="export_pdf",
         description="Export an approved and validated solution to PDF.",
         parameters={"type": "object", "required": ["solution_id"], "properties": {"solution_id": {"type": "string"}}},
+        read_only=False,
+        mutates=True,
+        reversible=False,
+        blocked_in_production=True,
+        requires_human_approval=True,
     ),
     AiToolDefinition(
         name="export_dxf",
         description="Export an approved and validated solution to DXF.",
         parameters={"type": "object", "required": ["solution_id"], "properties": {"solution_id": {"type": "string"}}},
+        read_only=False,
+        mutates=True,
+        reversible=False,
+        blocked_in_production=True,
+        requires_human_approval=True,
     ),
     AiToolDefinition(
         name="write_back_crm",
         description="Write back solution status through the configured CRM Adapter and audit the confirmation.",
         parameters={"type": "object", "required": ["solution_id"], "properties": {"solution_id": {"type": "string"}}},
+        read_only=False,
+        mutates=True,
+        reversible=False,
+        blocked_in_production=True,
+        requires_human_approval=True,
     ),
 ]
 
@@ -110,10 +136,15 @@ def execute_ai_tool(
     tool_name: str,
     arguments: dict[str, Any] | None = None,
     actor_id: str | None = None,
+    actor_permissions: list[str] | None = None,
 ) -> AiToolCallResult:
     args = arguments or {}
+    tool = AI_TOOL_MAP.get(tool_name)
     executor = AI_TOOL_EXECUTORS.get(tool_name)
-    if executor is None:
+    missing_permissions = _missing_tool_permissions(tool, actor_permissions)
+    if missing_permissions:
+        result = _failed(tool_name, f"missing permission(s): {', '.join(missing_permissions)}")
+    elif executor is None:
         result = _failed(tool_name, f"unknown AI tool: {tool_name}")
     else:
         try:
@@ -134,6 +165,12 @@ def execute_ai_tool(
         },
     )
     return result
+
+
+def _missing_tool_permissions(tool: AiToolDefinition | None, actor_permissions: list[str] | None) -> list[str]:
+    if tool is None or actor_permissions is None or "*" in actor_permissions:
+        return []
+    return [permission for permission in tool.required_permissions if permission not in actor_permissions]
 
 
 def plan_ai_tool_calls(message: str) -> list[dict[str, Any]]:

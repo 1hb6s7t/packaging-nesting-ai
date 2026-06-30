@@ -28,6 +28,18 @@ def test_ai_tool_execution_requires_auth_and_searches_orders() -> None:
     }
     assert client.post("/api/orders/import", json=order_payload, headers=headers).status_code == 200
 
+    missing_tools_auth = client.get("/api/ai/tools")
+    assert missing_tools_auth.status_code == 401
+    tools_response = client.get("/api/ai/tools", headers=headers)
+    assert tools_response.status_code == 200
+    tools = {tool["name"]: tool for tool in tools_response.json()}
+    assert tools["search_orders"]["schema_version"] == 1
+    assert tools["search_orders"]["required_permissions"] == ["ai:use"]
+    assert tools["search_orders"]["read_only"] is True
+    assert tools["run_solver"]["mutates"] is True
+    assert tools["export_pdf"]["blocked_in_production"] is True
+    assert tools["export_pdf"]["requires_human_approval"] is True
+
     missing_auth = client.post(
         "/api/ai/tools/execute",
         json={"tool_name": "search_orders", "arguments": {"query": product_name}},

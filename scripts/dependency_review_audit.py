@@ -13,7 +13,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import release_inventory
+import release_inventory  # noqa: E402
 
 
 APPROVED_DECISION = "approved"
@@ -36,6 +36,7 @@ def build_dependency_review_audit(
         "status": "failed",
         "inventory_path": str(inventory_path) if inventory_path else None,
         "review_file": str(review_file) if review_file else None,
+        "options": {"require_review_file": require_review_file},
         "summary": empty_summary(len(required_items)),
         "errors": [],
         "warnings": [],

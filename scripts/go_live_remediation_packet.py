@@ -14,20 +14,21 @@ REPO_ROOT = SCRIPT_DIR.parent
 
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import external_acceptance_audit
-import production_env_audit
-import repository_hygiene_audit
+import external_acceptance_audit  # noqa: E402
+import production_env_audit  # noqa: E402
+import repository_hygiene_audit  # noqa: E402
 
 
 DEFAULT_OUTPUT_DIR = Path("artifacts/go-live-remediation")
 DEFAULT_ENV_EXAMPLE = Path(".env.production.example")
 PACKET_MANIFEST_NAME = "go-live-remediation-packet.json"
 PACKET_READINESS_NAME = "go-live-remediation-readiness.json"
-PRODUCTION_ENV_AUDIT_OUTPUTS = ("production-env-audit.json",)
+PRODUCTION_ENV_AUDIT_OUTPUTS = ("production-env-audit.json", "production-env-verification.json")
 EXTERNAL_ACCEPTANCE_AUDIT_OUTPUTS = (
     "external-acceptance.json",
     "external-acceptance-refresh-report.json",
     "external-acceptance-audit.json",
+    "external-acceptance-verification.json",
 )
 
 
@@ -335,6 +336,7 @@ def build_tasks(blockers: list[str], output_dir: Path) -> list[dict[str, Any]]:
             "draft": str(output_dir / "production-env.draft"),
             "draft_report": str(output_dir / "production-env-draft-report.json"),
             "expected_output": str(output_dir / "production-env-audit.json"),
+            "expected_verification": str(output_dir / "production-env-verification.json"),
             "command": 'python scripts\\production_env_audit.py --env-file "<packet>\\.env.production" --output "<packet>\\production-env-audit.json"',
         },
         {
@@ -345,11 +347,12 @@ def build_tasks(blockers: list[str], output_dir: Path) -> list[dict[str, Any]]:
             "template": str(output_dir / "external-acceptance.template.json"),
             "expected_refreshed_manifest": str(output_dir / "external-acceptance.json"),
             "expected_output": str(output_dir / "external-acceptance-audit.json"),
+            "expected_verification": str(output_dir / "external-acceptance-verification.json"),
             "required_areas": list(external_acceptance_audit.REQUIRED_ACCEPTANCE_AREAS),
             "required_document_fields": ["environment", "reviewer", "reviewed_at"],
             "required_entry_fields": ["area", "status", "summary", "ticket", "evidence_files"],
             "required_evidence_fields": ["path", "description"],
-            "command": 'python scripts\\external_acceptance_audit.py --refresh-evidence-metadata "<packet>\\external-acceptance.draft.json" --refreshed-output "<packet>\\external-acceptance.json" --output "<packet>\\external-acceptance-refresh-report.json"; python scripts\\external_acceptance_audit.py --acceptance-file "<packet>\\external-acceptance.json" --require-acceptance-file --output "<packet>\\external-acceptance-audit.json"',
+            "command": 'python scripts\\external_acceptance_audit.py --refresh-evidence-metadata "<packet>\\external-acceptance.draft.json" --refreshed-output "<packet>\\external-acceptance.json" --output "<packet>\\external-acceptance-refresh-report.json"; python scripts\\external_acceptance_audit.py --acceptance-file "<packet>\\external-acceptance.json" --require-acceptance-file --output "<packet>\\external-acceptance-audit.json"; python scripts\\verify_external_acceptance_audit.py --report "<packet>\\external-acceptance-audit.json" --base-dir "<packet>" --output "<packet>\\external-acceptance-verification.json"',
         },
         {
             "id": "release_image_dependency_audit",
@@ -358,7 +361,9 @@ def build_tasks(blockers: list[str], output_dir: Path) -> list[dict[str, Any]]:
             "expected_outputs": [
                 "artifacts\\dependency-inventory-release-image.json",
                 "artifacts\\dependency-review-audit-release-image.json",
+                "artifacts\\dependency-review-verification-release-image.json",
                 "artifacts\\release-image-dependency-audit.json",
+                "artifacts\\release-image-dependency-verification.json",
             ],
         },
         {
@@ -366,6 +371,14 @@ def build_tasks(blockers: list[str], output_dir: Path) -> list[dict[str, Any]]:
             "status": "pending" if blockers else "ready",
             "reason": "rerun after production env and external acceptance evidence are real and audited",
             "command_script": str(output_dir / "run-go-live-evidence.ps1"),
+            "expected_outputs": [
+                "artifacts\\release-evidence\\production-env-verification.json",
+                "artifacts\\release-evidence\\external-acceptance-verification.json",
+                "artifacts\\dependency-review-verification-release-image.json",
+                "artifacts\\release-handoff-bundle.json",
+                "artifacts\\release-handoff-verification.json",
+                "artifacts\\go-live-readiness.json",
+            ],
         },
     ]
 
@@ -416,7 +429,7 @@ def write_evidence_readme(evidence_dir: Path) -> Path:
         "At the top level, fill environment, reviewer, and reviewed_at. reviewed_at must be a timezone-aware ISO datetime such as 2026-06-29T10:00:00Z.",
         "For each required area, set status to passed and fill summary, ticket, evidence_files[].path, and evidence_files[].description.",
         "Then run the packet command script. It refreshes size_bytes and sha256 automatically before auditing.",
-        "The audit command recalculates both values and fails on missing files, path escapes, size mismatches, or hash mismatches.",
+        "The audit and verification commands recalculate both values and fail on missing files, path escapes, size mismatches, or hash mismatches.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -443,6 +456,11 @@ def write_packet_readme(
                 "3. Do not hand-fill size_bytes or sha256; run-go-live-evidence.ps1 refreshes them into external-acceptance.json before auditing.",
                 "4. Run run-go-live-evidence.ps1 from the repository root.",
                 "   The script writes go-live-remediation-readiness.json and a repository hygiene audit before the heavier release image and preflight gates.",
+                "   It verifies production-env-audit.json against .env.production into production-env-verification.json before continuing.",
+                "   It verifies external-acceptance-audit.json into external-acceptance-verification.json before continuing.",
+                "   It verifies the release-evidence production env and external acceptance audits before building the final handoff.",
+                "   It verifies dependency-review-audit-release-image.json into artifacts/dependency-review-verification-release-image.json before building the final handoff.",
+                "   It also verifies release-image-dependency-audit.json into artifacts/release-image-dependency-verification.json before building the final handoff.",
                 "   The script stops at the first failing native command so the first error is the remediation target.",
                 "   If required inputs are missing or evidence refresh fails, readiness removes stale audit outputs from earlier runs.",
                 "",
@@ -496,11 +514,17 @@ if (-not (Test-Path -LiteralPath $AcceptanceDraftFile)) {{
 Invoke-NativeStep "production env audit" {{
   python scripts\\production_env_audit.py --env-file $EnvFile --output (Join-Path $PacketDir "production-env-audit.json")
 }}
+Invoke-NativeStep "production env audit verification" {{
+  python scripts\\verify_production_env_audit.py --report (Join-Path $PacketDir "production-env-audit.json") --env-file $EnvFile --output (Join-Path $PacketDir "production-env-verification.json")
+}}
 Invoke-NativeStep "external acceptance evidence refresh" {{
   python scripts\\external_acceptance_audit.py --refresh-evidence-metadata $AcceptanceDraftFile --refreshed-output $AcceptanceFile --output (Join-Path $PacketDir "external-acceptance-refresh-report.json")
 }}
 Invoke-NativeStep "external acceptance audit" {{
   python scripts\\external_acceptance_audit.py --acceptance-file $AcceptanceFile --require-acceptance-file --output (Join-Path $PacketDir "external-acceptance-audit.json")
+}}
+Invoke-NativeStep "external acceptance audit verification" {{
+  python scripts\\verify_external_acceptance_audit.py --report (Join-Path $PacketDir "external-acceptance-audit.json") --base-dir $PacketDir --output (Join-Path $PacketDir "external-acceptance-verification.json")
 }}
 Invoke-NativeStep "go-live remediation readiness" {{
   python scripts\\go_live_remediation_packet.py --audit-packet $PacketDir --output (Join-Path $PacketDir "go-live-remediation-readiness.json")
@@ -511,6 +535,12 @@ Invoke-NativeStep "repository hygiene audit" {{
 Invoke-NativeStep "release image dependency audit" {{
   python scripts\\release_image_dependency_audit.py --inventory-output artifacts\\dependency-inventory-release-image.json --review-output artifacts\\dependency-review-audit-release-image.json --output artifacts\\release-image-dependency-audit.json
 }}
+Invoke-NativeStep "release image dependency review verification" {{
+  python scripts\\verify_dependency_review_audit.py --report artifacts\\dependency-review-audit-release-image.json --output artifacts\\dependency-review-verification-release-image.json
+}}
+Invoke-NativeStep "release image dependency audit verification" {{
+  python scripts\\verify_release_image_dependency_audit.py --report artifacts\\release-image-dependency-audit.json --output artifacts\\release-image-dependency-verification.json
+}}
 Invoke-NativeStep "release preflight" {{
   python scripts\\release_preflight.py --report-path artifacts\\release-preflight.json --inventory-path artifacts\\dependency-inventory-local.json --evidence-output-dir artifacts\\release-evidence --env-file $EnvFile --require-production-env --external-acceptance-file $AcceptanceFile --require-external-acceptance
 }}
@@ -520,8 +550,14 @@ Invoke-NativeStep "release preflight verification" {{
 Invoke-NativeStep "release evidence verification" {{
   python scripts\\verify_release_evidence_pack.py --manifest artifacts\\release-evidence\\release-evidence-pack.json --output artifacts\\release-evidence\\release-evidence-verification-extra.json
 }}
+Invoke-NativeStep "release evidence production env verification" {{
+  python scripts\\verify_production_env_audit.py --report artifacts\\release-evidence\\production-env-audit.json --env-file $EnvFile --output artifacts\\release-evidence\\production-env-verification.json
+}}
+Invoke-NativeStep "release evidence external acceptance verification" {{
+  python scripts\\verify_external_acceptance_audit.py --report artifacts\\release-evidence\\external-acceptance-audit.json --base-dir $PacketDir --output artifacts\\release-evidence\\external-acceptance-verification.json
+}}
 Invoke-NativeStep "release handoff bundle" {{
-  python scripts\\release_handoff_bundle.py --preflight-report artifacts\\release-preflight.json --preflight-verification artifacts\\release-preflight-verification.json --dependency-inventory artifacts\\dependency-inventory-release-image.json --dependency-review-audit artifacts\\dependency-review-audit-release-image.json --release-image-dependency-audit artifacts\\release-image-dependency-audit.json --output artifacts\\release-handoff-bundle.json
+  python scripts\\release_handoff_bundle.py --preflight-report artifacts\\release-preflight.json --preflight-verification artifacts\\release-preflight-verification.json --dependency-inventory artifacts\\dependency-inventory-release-image.json --dependency-review-audit artifacts\\dependency-review-audit-release-image.json --dependency-review-verification artifacts\\dependency-review-verification-release-image.json --release-image-dependency-audit artifacts\\release-image-dependency-audit.json --release-image-dependency-verification artifacts\\release-image-dependency-verification.json --production-env-verification artifacts\\release-evidence\\production-env-verification.json --external-acceptance-verification artifacts\\release-evidence\\external-acceptance-verification.json --output artifacts\\release-handoff-bundle.json
 }}
 Invoke-NativeStep "release handoff verification" {{
   python scripts\\verify_release_handoff_bundle.py --manifest artifacts\\release-handoff-bundle.json --output artifacts\\release-handoff-verification.json

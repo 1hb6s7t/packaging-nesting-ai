@@ -48,12 +48,8 @@ def test_solver_governance_audit_passes_registry_guards_rectpack_and_benchmark()
     assert report["benchmark"]["solver_name"] == "RectpackSolver"
     assert report["benchmark"]["valid"] is True
     assert report["benchmark"]["persisted_run_count"] >= 1
-    assert set(report["adapters"]["external_placeholder_names"]) == {
-        "MockPhoenixSolver",
-        "OrToolsSolver",
-        "PackingSolver",
-        "SparrowSolver",
-    }
+    assert set(report["adapters"]["external_placeholder_names"]) == {"MockPhoenixSolver", "OrToolsSolver"}
+    assert set(report["adapters"]["external_cli_adapter_names"]) == {"PackingSolver", "SparrowSolver"}
     assert all(check["status"] == "passed" for check in report["checks"])
 
 

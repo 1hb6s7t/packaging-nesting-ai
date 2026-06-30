@@ -30,6 +30,12 @@ def test_release_evidence_pack_writes_default_local_artifacts(tmp_path: Path, mo
     assert pack["status"] == "passed"
     assert pack["summary"]["artifact_count"] == 11
     assert pack["summary"]["passed_count"] == 8
+    assert pack["summary"]["policy_contract_status"] == "warning"
+    assert pack["summary"]["policy_contract_failed_count"] == 0
+    assert pack["policy_contract"]["status"] == "warning"
+    warning_codes = {item["code"] for item in pack["policy_contract"]["warning_checks"]}
+    assert "artifacts.nested_contracts" in warning_codes
+    assert "dependency_review.signoff" in warning_codes
     assert pack["summary"]["skipped_artifacts"] == [
         "production_env_audit",
         "external_acceptance_audit",
@@ -69,6 +75,8 @@ def test_release_evidence_pack_writes_default_local_artifacts(tmp_path: Path, mo
     manifest = json.loads((output_dir / "release-evidence-pack.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "passed"
     assert manifest["manifest_path"] == str(output_dir / "release-evidence-pack.json")
+    assert manifest["summary"]["policy_contract_status"] == pack["summary"]["policy_contract_status"]
+    assert manifest["policy_contract"]["failed_count"] == 0
     manifest_by_name = {item["name"]: item for item in manifest["artifacts"]}
     assert manifest_by_name["customer_sandbox_audit"]["sha256"] == by_name["customer_sandbox_audit"]["sha256"]
 
@@ -214,8 +222,12 @@ def test_cli_writes_manifest_and_returns_nonzero_when_artifact_fails(tmp_path: P
     manifest = json.loads((output_dir / "release-evidence-pack.json").read_text(encoding="utf-8"))
     by_name = {item["name"]: item for item in manifest["artifacts"]}
     assert manifest["status"] == "failed"
+    assert manifest["summary"]["policy_contract_status"] == "failed"
+    assert manifest["summary"]["policy_contract_failed_count"] > 0
     assert by_name["storage_export_audit"]["status"] == "failed"
     assert "storage_export_audit" in manifest["summary"]["failed_artifacts"]
+    failed_codes = {item["code"] for item in manifest["policy_contract"]["failed_checks"]}
+    assert "artifacts.required_passed" in failed_codes
 
 
 def test_release_evidence_artifact_redacts_and_fails_unredacted_sensitive_payload(tmp_path: Path) -> None:

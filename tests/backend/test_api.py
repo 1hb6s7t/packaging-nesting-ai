@@ -16,7 +16,7 @@ client = TestClient(app)
 
 def test_health_and_ai_tools() -> None:
     assert client.get("/api/health").json()["status"] == "ok"
-    tools = client.get("/api/ai/tools").json()
+    tools = client.get("/api/ai/tools", headers=auth_headers(client)).json()
     assert any(tool["name"] == "run_solver" for tool in tools)
 
 
@@ -181,3 +181,49 @@ def test_create_sheet_and_run_job() -> None:
     solution = response.json()["solutions"][0]
     assert solution["validation_report"]["is_valid"] is True
     assert client.get(f"/api/solutions/{solution['solution_id']}/preview.svg", headers=headers).status_code == 200
+
+
+def test_create_job_rejects_empty_or_duplicate_items() -> None:
+    headers = auth_headers(client)
+    sheet = {
+        "sheet_id": "sheet_job_validation",
+        "width": 500,
+        "height": 400,
+        "margin_top": 5,
+        "margin_right": 5,
+        "margin_bottom": 5,
+        "margin_left": 5,
+        "gripper_mm": 10,
+        "material": "white_card",
+        "thickness": "350gsm",
+        "cost_per_sheet": 3.5,
+    }
+    empty = client.post(
+        "/api/nesting/jobs",
+        json={"job_id": "job_empty_items", "sheet": sheet, "candidate_items": []},
+        headers=headers,
+    )
+    assert empty.status_code == 422
+
+    duplicate = client.post(
+        "/api/nesting/jobs",
+        json={
+            "job_id": "job_duplicate_items",
+            "sheet": sheet,
+            "candidate_items": [
+                {
+                    "item_id": "dup_item",
+                    "order_id": "O-DUP-1",
+                    "polygon": {"shape_id": "shape_dup_1", "outer": [[0, 0], [100, 0], [100, 80], [0, 80]]},
+                },
+                {
+                    "item_id": "dup_item",
+                    "order_id": "O-DUP-2",
+                    "polygon": {"shape_id": "shape_dup_2", "outer": [[0, 0], [120, 0], [120, 90], [0, 90]]},
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert duplicate.status_code == 422
+    assert "job item_id values must be unique" in str(duplicate.json()["detail"])

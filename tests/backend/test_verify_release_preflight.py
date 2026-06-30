@@ -28,8 +28,8 @@ def test_verify_release_preflight_accepts_complete_report_with_dependency_warnin
     report = module.verify_release_preflight_report(report_path)
 
     assert report["status"] == "passed"
-    assert report["summary"]["gate_count"] == 5
-    assert report["summary"]["passed_gate_count"] == 5
+    assert report["summary"]["gate_count"] == 6
+    assert report["summary"]["passed_gate_count"] == 6
     assert report["summary"]["error_count"] == 0
     assert report["summary"]["warning_count"] == 1
     assert "dependency inventory has 1 review-required item(s)" in report["warnings"]
@@ -74,23 +74,63 @@ def test_verify_release_preflight_requires_default_release_gates_unless_allowed(
     payload["options"]["skip_frontend"] = True
     payload["options"]["skip_smoke"] = True
     payload["options"]["skip_evidence_pack"] = True
+    payload["options"]["skip_benchmark_gate"] = True
     payload["gates"] = [payload["gates"][0]]
     report_path = tmp_path / "release-preflight.json"
     report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     strict_report = module.verify_release_preflight_report(report_path)
+    assert strict_report["status"] == "failed"
+    assert "release evidence pack gate was skipped" in strict_report["errors"]
+    assert "benchmark release gate was skipped" in strict_report["errors"]
+    assert "frontend build was skipped" in strict_report["errors"]
+    assert "API health smoke was skipped" in strict_report["errors"]
     allowed_report = module.verify_release_preflight_report(
         report_path,
         require_evidence_pack=False,
         require_frontend=False,
+        require_benchmark_gate=False,
         require_smoke=False,
     )
 
-    assert strict_report["status"] == "failed"
-    assert "release evidence pack gate was skipped" in strict_report["errors"]
-    assert "frontend build was skipped" in strict_report["errors"]
-    assert "API health smoke was skipped" in strict_report["errors"]
     assert allowed_report["status"] == "passed"
+
+
+def test_verify_release_preflight_allows_explicit_skipped_optional_gates(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["skip_frontend"] = True
+    payload["options"]["skip_smoke"] = True
+    for gate in payload["gates"]:
+        if gate["name"] in {"frontend production build", "API health smoke"}:
+            gate["status"] = "skipped"
+            gate["duration_sec"] = 0
+            gate.pop("exit_code", None)
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path, require_frontend=False, require_smoke=False)
+
+    assert report["status"] == "passed"
+    assert report["summary"]["failed_gate_count"] == 0
+    assert report["summary"]["failed_gates"] == []
+
+
+def test_verify_release_preflight_rejects_failed_benchmark_gate(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    for gate in payload["gates"]:
+        if gate["name"] == "benchmark release gate":
+            gate["payload"]["status"] = "failed"
+            gate["payload"]["summary"]["error_count"] = 1
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "benchmark release gate status must be passed, got failed" in report["errors"]
+    assert "benchmark release gate summary has errors" in report["errors"]
 
 
 def test_verify_release_preflight_requires_dependency_review_artifact_when_option_is_set(tmp_path: Path) -> None:
@@ -105,6 +145,76 @@ def test_verify_release_preflight_requires_dependency_review_artifact_when_optio
 
     assert report["status"] == "failed"
     assert "dependency review audit artifact is missing" in report["errors"]
+
+
+def test_verify_release_preflight_accepts_required_dependency_review_verification(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["dependency_review_file"] = "artifacts/dependency-review.json"
+    payload["options"]["require_dependency_review"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "dependency_review_audit",
+        relative_path="dependency-review-audit.json",
+        summary=dependency_review_artifact_summary(),
+    )
+    append_evidence_file_verification_gate(
+        payload,
+        "release evidence dependency review verification",
+        dependency_review_verification_payload(),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "passed"
+    assert report["summary"]["error_count"] == 0
+
+
+def test_verify_release_preflight_requires_dependency_review_verification_gate(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["dependency_review_file"] = "artifacts/dependency-review.json"
+    payload["options"]["require_dependency_review"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "dependency_review_audit",
+        relative_path="dependency-review-audit.json",
+        summary=dependency_review_artifact_summary(),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "dependency review verification gate is missing" in report["errors"]
+
+
+def test_verify_release_preflight_rejects_failed_dependency_review_verification(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["dependency_review_file"] = "artifacts/dependency-review.json"
+    payload["options"]["require_dependency_review"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "dependency_review_audit",
+        relative_path="dependency-review-audit.json",
+        summary=dependency_review_artifact_summary(),
+    )
+    append_evidence_file_verification_gate(
+        payload,
+        "release evidence dependency review verification",
+        dependency_review_verification_payload(error_count=1),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "dependency review verification summary has errors" in report["errors"]
 
 
 def test_verify_release_preflight_requires_external_acceptance_artifact_when_option_is_set(tmp_path: Path) -> None:
@@ -151,6 +261,115 @@ def test_verify_release_preflight_requires_production_env_artifact_when_option_i
 
     assert report["status"] == "failed"
     assert "production env audit artifact must be passed, got skipped" in report["errors"]
+
+
+def test_verify_release_preflight_accepts_required_production_and_external_verifications(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["env_file"] = ".env.production"
+    payload["options"]["require_production_env"] = True
+    payload["options"]["external_acceptance_file"] = "artifacts/external-acceptance.json"
+    payload["options"]["require_external_acceptance"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "production_env_audit",
+        relative_path="production-env-audit.json",
+        summary=production_env_artifact_summary(),
+    )
+    mark_evidence_artifact_passed(
+        payload,
+        "external_acceptance_audit",
+        relative_path="external-acceptance-audit.json",
+        summary=external_acceptance_artifact_summary(),
+    )
+    append_evidence_file_verification_gate(
+        payload,
+        "release evidence production env verification",
+        production_env_verification_payload(),
+    )
+    append_evidence_file_verification_gate(
+        payload,
+        "release evidence external acceptance verification",
+        external_acceptance_verification_payload(),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "passed"
+    assert report["summary"]["gate_count"] == 8
+    assert report["summary"]["error_count"] == 0
+
+
+def test_verify_release_preflight_requires_production_env_verification_gate(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["env_file"] = ".env.production"
+    payload["options"]["require_production_env"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "production_env_audit",
+        relative_path="production-env-audit.json",
+        summary=production_env_artifact_summary(),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "production env verification gate is missing" in report["errors"]
+
+
+def test_verify_release_preflight_rejects_failed_production_env_verification(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["env_file"] = ".env.production"
+    payload["options"]["require_production_env"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "production_env_audit",
+        relative_path="production-env-audit.json",
+        summary=production_env_artifact_summary(),
+    )
+    append_evidence_file_verification_gate(
+        payload,
+        "release evidence production env verification",
+        production_env_verification_payload(rebuilt_report_match=False),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "production env verification must match the supplied env file" in report["errors"]
+
+
+def test_verify_release_preflight_rejects_failed_external_acceptance_verification(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    payload["options"]["external_acceptance_file"] = "artifacts/external-acceptance.json"
+    payload["options"]["require_external_acceptance"] = True
+    mark_evidence_artifact_passed(
+        payload,
+        "external_acceptance_audit",
+        relative_path="external-acceptance-audit.json",
+        summary=external_acceptance_artifact_summary(),
+    )
+    append_evidence_file_verification_gate(
+        payload,
+        "release evidence external acceptance verification",
+        external_acceptance_verification_payload(failed_evidence_check_count=1),
+    )
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "external acceptance verification has failed evidence checks" in report["errors"]
 
 
 def test_verify_release_preflight_cli_writes_report_and_can_fail_on_dependency_review(tmp_path: Path) -> None:
@@ -200,6 +419,64 @@ def test_verify_release_preflight_fail_on_dependency_review_uses_missing_depende
     assert "regenerate and use the release image dependency inventory before go-live" in written["errors"][0]
 
 
+def test_verify_release_preflight_rejects_failed_pack_policy_summary(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    for gate in payload["gates"]:
+        gate_payload = gate.get("payload")
+        if isinstance(gate_payload, dict) and isinstance(gate_payload.get("pack_summary"), dict):
+            gate_payload["pack_summary"]["policy_contract_status"] = "failed"
+            gate_payload["pack_summary"]["policy_contract_failed_count"] = 1
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "release evidence pack policy contract has failed checks" in report["errors"]
+
+
+def test_verify_release_preflight_rejects_failed_artifact_policy_summary(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    for gate in payload["gates"]:
+        gate_payload = gate.get("payload")
+        artifacts = gate_payload.get("artifacts") if isinstance(gate_payload, dict) else None
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and artifact.get("name") == "deployment_compose_audit":
+                artifact["summary"]["policy_contract_status"] = "failed"
+                artifact["summary"]["policy_contract_failed_count"] = 1
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "evidence artifact deployment_compose_audit policy_contract_failed_count must be 0" in report["errors"]
+
+
+def test_verify_release_preflight_rejects_failed_artifact_sensitive_scan_summary(tmp_path: Path) -> None:
+    module = load_verify_release_preflight_module()
+    payload = valid_preflight_report()
+    for gate in payload["gates"]:
+        gate_payload = gate.get("payload")
+        artifacts = gate_payload.get("artifacts") if isinstance(gate_payload, dict) else None
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and artifact.get("name") == "customer_sandbox_audit":
+                artifact["summary"]["sensitive_scan_status"] = "failed"
+                artifact["summary"]["sensitive_scan_failed_count"] = 1
+    report_path = tmp_path / "release-preflight.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = module.verify_release_preflight_report(report_path)
+
+    assert report["status"] == "failed"
+    assert "evidence artifact customer_sandbox_audit sensitive scan has failed findings" in report["errors"]
+
 
 def valid_preflight_report() -> dict:
     artifact_sha = "a" * 64
@@ -216,6 +493,9 @@ def valid_preflight_report() -> dict:
             "failed_count": 0,
             "required_failed_count": 0,
             "skipped_count": 1,
+            "policy_contract_status": "passed",
+            "policy_contract_failed_count": 0,
+            "policy_contract_warning_count": 0,
         },
         "artifacts": [
             {
@@ -225,6 +505,12 @@ def valid_preflight_report() -> dict:
                 "relative_path": "deployment-compose-audit.json",
                 "size_bytes": 123,
                 "sha256": artifact_sha,
+                "summary": {
+                    "policy_contract_status": "passed",
+                    "policy_contract_failed_count": 0,
+                    "sensitive_scan_status": "passed",
+                    "sensitive_scan_failed_count": 0,
+                },
             },
             {
                 "name": "customer_sandbox_audit",
@@ -233,6 +519,16 @@ def valid_preflight_report() -> dict:
                 "relative_path": "customer-sandbox-audit.json",
                 "size_bytes": 123,
                 "sha256": artifact_sha,
+                "summary": {
+                    "pack_contract_status": "passed",
+                    "pack_contract_failed_count": 0,
+                    "sync_strategy_status": "passed",
+                    "sync_strategy_failed_count": 0,
+                    "business_flow_status": "passed",
+                    "business_flow_failed_count": 0,
+                    "sensitive_scan_status": "passed",
+                    "sensitive_scan_failed_count": 0,
+                },
             },
             {
                 "name": "production_env_audit",
@@ -241,6 +537,7 @@ def valid_preflight_report() -> dict:
                 "relative_path": None,
                 "size_bytes": None,
                 "sha256": None,
+                "summary": {"reason": "--env-file was not provided"},
             },
         ],
     }
@@ -265,6 +562,7 @@ def valid_preflight_report() -> dict:
             "full_backend": False,
             "skip_frontend": False,
             "skip_evidence_pack": False,
+            "skip_benchmark_gate": False,
             "skip_smoke": False,
             "env_file": None,
             "require_production_env": False,
@@ -280,6 +578,14 @@ def valid_preflight_report() -> dict:
                 "status": "passed",
                 "duration_sec": 1.0,
                 "exit_code": 0,
+            },
+            {
+                "name": "benchmark release gate",
+                "kind": "command",
+                "status": "passed",
+                "duration_sec": 1.0,
+                "exit_code": 0,
+                "payload": benchmark_gate_payload(),
             },
             {
                 "name": "release evidence pack generation",
@@ -327,6 +633,147 @@ def valid_preflight_report() -> dict:
             "dependency_count": 10,
             "review_required_count": 1,
             "review_required": [{"name": "example"}],
+        },
+    }
+
+
+def mark_evidence_artifact_passed(
+    payload: dict,
+    artifact_name: str,
+    *,
+    relative_path: str,
+    summary: dict,
+) -> None:
+    artifact_payload = {
+        "name": artifact_name,
+        "required": True,
+        "status": "passed",
+        "relative_path": relative_path,
+        "size_bytes": 123,
+        "sha256": "b" * 64,
+        "summary": dict(summary),
+    }
+    for gate in payload["gates"]:
+        gate_payload = gate.get("payload")
+        artifacts = gate_payload.get("artifacts") if isinstance(gate_payload, dict) else None
+        if not isinstance(artifacts, list):
+            continue
+        existing = next(
+            (artifact for artifact in artifacts if isinstance(artifact, dict) and artifact.get("name") == artifact_name),
+            None,
+        )
+        if existing is None:
+            artifacts.append(dict(artifact_payload))
+        else:
+            existing.update(artifact_payload)
+
+
+def append_evidence_file_verification_gate(payload: dict, name: str, gate_payload: dict) -> None:
+    payload["gates"].append(
+        {
+            "name": name,
+            "kind": "command",
+            "status": "passed",
+            "duration_sec": 1.0,
+            "exit_code": 0,
+            "payload": gate_payload,
+        }
+    )
+
+
+def production_env_artifact_summary() -> dict:
+    return {
+        "policy_contract_status": "passed",
+        "policy_contract_failed_count": 0,
+        "sensitive_scan_status": "passed",
+        "sensitive_scan_failed_count": 0,
+    }
+
+
+def dependency_review_artifact_summary() -> dict:
+    return {
+        "policy_contract_status": "passed",
+        "policy_contract_failed_count": 0,
+        "sensitive_scan_status": "passed",
+        "sensitive_scan_failed_count": 0,
+    }
+
+
+def external_acceptance_artifact_summary() -> dict:
+    return {
+        "policy_contract_status": "passed",
+        "policy_contract_failed_count": 0,
+        "sensitive_scan_status": "passed",
+        "sensitive_scan_failed_count": 0,
+    }
+
+
+def production_env_verification_payload(*, rebuilt_report_match: bool = True, error_count: int = 0) -> dict:
+    return {
+        "path": "tmp/release-preflight-evidence/production-env-verification.json",
+        "exists": True,
+        "status": "passed",
+        "report_status": "passed",
+        "report_path": "tmp/release-preflight-evidence/production-env-audit.json",
+        "summary": {
+            "rebuilt_report_match": rebuilt_report_match,
+            "error_count": error_count,
+        },
+    }
+
+
+def dependency_review_verification_payload(*, error_count: int = 0) -> dict:
+    return {
+        "path": "tmp/release-preflight-evidence/dependency-review-verification.json",
+        "exists": True,
+        "status": "passed",
+        "report_status": "passed",
+        "report_path": "tmp/release-preflight-evidence/dependency-review-audit.json",
+        "summary": {
+            "error_count": error_count,
+        },
+    }
+
+
+def external_acceptance_verification_payload(*, failed_evidence_check_count: int = 0, error_count: int = 0) -> dict:
+    return {
+        "path": "tmp/release-preflight-evidence/external-acceptance-verification.json",
+        "exists": True,
+        "status": "passed",
+        "report_status": "passed",
+        "report_path": "tmp/release-preflight-evidence/external-acceptance-audit.json",
+        "summary": {
+            "failed_evidence_check_count": failed_evidence_check_count,
+            "error_count": error_count,
+        },
+    }
+
+
+def benchmark_gate_payload(*, error_count: int = 0) -> dict:
+    status = "passed" if error_count == 0 else "failed"
+    return {
+        "report_path": "tmp/release-preflight-evidence/benchmark-release-gate.json",
+        "exists": True,
+        "status": status,
+        "thresholds": {
+            "min_quantity_fulfillment_rate": 1.0,
+            "max_p95_runtime_ms": 2000,
+            "max_total_runtime_ms": 15000,
+            "max_peak_rss_mb": None,
+        },
+        "case_count": 6,
+        "summary": {
+            "case_count": 6,
+            "passed_case_count": 6,
+            "failed_case_count": 0,
+            "quantity_levels": [1000, 3000, 5000, 10000, 15000],
+            "planning_modes": ["expanded", "pattern"],
+            "min_quantity_fulfillment_rate": 1.0,
+            "p95_runtime_ms": 50,
+            "total_runtime_ms": 200,
+            "wall_time_ms": 250,
+            "peak_rss_mb": 200.0,
+            "error_count": error_count,
         },
     }
 

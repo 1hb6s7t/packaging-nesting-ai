@@ -64,6 +64,7 @@ def test_go_live_remediation_packet_writes_templates_and_command_script(tmp_path
     assert tasks["production_env_audit"]["status"] == "pending"
     assert tasks["production_env_audit"]["draft"].endswith("production-env.draft")
     assert tasks["production_env_audit"]["draft_report"].endswith("production-env-draft-report.json")
+    assert tasks["production_env_audit"]["expected_verification"].endswith("production-env-verification.json")
     assert tasks["external_acceptance_audit"]["status"] == "pending"
     assert tasks["external_acceptance_audit"]["required_document_fields"] == [
         "environment",
@@ -78,24 +79,65 @@ def test_go_live_remediation_packet_writes_templates_and_command_script(tmp_path
         "evidence_files",
     ]
     assert tasks["external_acceptance_audit"]["required_evidence_fields"] == ["path", "description"]
+    assert tasks["external_acceptance_audit"]["expected_verification"].endswith(
+        "external-acceptance-verification.json"
+    )
     assert tasks["release_image_dependency_audit"]["status"] == "ready"
+    assert "artifacts\\dependency-review-verification-release-image.json" in tasks["release_image_dependency_audit"][
+        "expected_outputs"
+    ]
+    assert "artifacts\\release-image-dependency-verification.json" in tasks["release_image_dependency_audit"][
+        "expected_outputs"
+    ]
     assert tasks["final_handoff_and_go_live_readiness"]["status"] == "pending"
+    assert "artifacts\\release-evidence\\production-env-verification.json" in tasks[
+        "final_handoff_and_go_live_readiness"
+    ]["expected_outputs"]
+    assert "artifacts\\release-evidence\\external-acceptance-verification.json" in tasks[
+        "final_handoff_and_go_live_readiness"
+    ]["expected_outputs"]
+    assert "artifacts\\dependency-review-verification-release-image.json" in tasks[
+        "final_handoff_and_go_live_readiness"
+    ]["expected_outputs"]
 
     command_script = (output_dir / "run-go-live-evidence.ps1").read_text(encoding="utf-8")
     assert "function Invoke-NativeStep" in command_script
     assert 'throw "$Name failed with exit code $LASTEXITCODE"' in command_script
     assert 'Invoke-NativeStep "production env audit"' in command_script
+    assert 'Invoke-NativeStep "production env audit verification"' in command_script
+    assert 'Invoke-NativeStep "external acceptance audit verification"' in command_script
     assert 'Invoke-NativeStep "go-live readiness audit"' in command_script
     assert "production-env.draft" in command_script
+    assert "verify_production_env_audit.py" in command_script
+    assert "production-env-verification.json" in command_script
     assert "repository_hygiene_audit.py" in command_script
     assert "release_image_dependency_audit.py" in command_script
+    assert 'Invoke-NativeStep "release image dependency review verification"' in command_script
+    assert 'Invoke-NativeStep "release image dependency audit verification"' in command_script
+    assert 'Invoke-NativeStep "release evidence production env verification"' in command_script
+    assert 'Invoke-NativeStep "release evidence external acceptance verification"' in command_script
+    assert "verify_dependency_review_audit.py" in command_script
+    assert "dependency-review-verification-release-image.json" in command_script
+    assert "verify_release_image_dependency_audit.py" in command_script
+    assert "release-image-dependency-verification.json" in command_script
+    assert "artifacts\\release-evidence\\production-env-verification.json" in command_script
+    assert "artifacts\\release-evidence\\external-acceptance-verification.json" in command_script
     assert "--dependency-inventory artifacts\\dependency-inventory-release-image.json" in command_script
     assert "--dependency-review-audit artifacts\\dependency-review-audit-release-image.json" in command_script
+    assert "--dependency-review-verification artifacts\\dependency-review-verification-release-image.json" in command_script
     assert "--release-image-dependency-audit artifacts\\release-image-dependency-audit.json" in command_script
+    assert "--release-image-dependency-verification artifacts\\release-image-dependency-verification.json" in command_script
+    assert "--production-env-verification artifacts\\release-evidence\\production-env-verification.json" in command_script
+    assert (
+        "--external-acceptance-verification artifacts\\release-evidence\\external-acceptance-verification.json"
+        in command_script
+    )
     assert "--require-production-env" in command_script
     assert "--require-external-acceptance" in command_script
     assert "--refresh-evidence-metadata $AcceptanceDraftFile" in command_script
     assert "--refreshed-output $AcceptanceFile" in command_script
+    assert "verify_external_acceptance_audit.py" in command_script
+    assert "external-acceptance-verification.json" in command_script
     assert "--audit-packet $PacketDir" in command_script
     assert "go-live-remediation-readiness.json" in command_script
     assert 'external-acceptance.draft.json' in command_script
@@ -103,7 +145,11 @@ def test_go_live_remediation_packet_writes_templates_and_command_script(tmp_path
     evidence_readme = (output_dir / "external-evidence-files" / "README.md").read_text(encoding="utf-8")
     assert "timezone-aware reviewed_at" in packet_readme
     assert "stops at the first failing native command" in packet_readme
+    assert "production-env-verification.json" in packet_readme
+    assert "release-evidence production env and external acceptance audits" in packet_readme
     assert "removes stale audit outputs" in packet_readme
+    assert "dependency-review-verification-release-image.json" in packet_readme
+    assert "release-image-dependency-verification.json" in packet_readme
     assert "reviewed_at must be a timezone-aware ISO datetime" in evidence_readme
     assert "fill summary and ticket" in packet_readme
     assert "descriptions" in packet_readme

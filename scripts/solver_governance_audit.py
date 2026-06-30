@@ -17,14 +17,14 @@ BACKEND_DIR = REPO_ROOT / "backend"
 
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.db import models as dbm  # noqa: F401
-from app.db.base import Base
-from app.domain import schemas
-from app.services import repository
-from app.services.benchmarks import run_and_record_benchmark
-from app.services.geometry import rectangle_asset
-from app.services.solvers import SolverOrchestrator
-from app.services.solvers.placeholders import UnsupportedExternalSolverAdapter
+from app.db import models as dbm  # noqa: E402, F401
+from app.db.base import Base  # noqa: E402
+from app.domain import schemas  # noqa: E402
+from app.services import repository  # noqa: E402
+from app.services.benchmarks import run_and_record_benchmark  # noqa: E402
+from app.services.geometry import rectangle_asset  # noqa: E402
+from app.services.solvers import SolverOrchestrator  # noqa: E402
+from app.services.solvers.placeholders import UnsupportedExternalSolverAdapter  # noqa: E402
 
 
 def build_solver_governance_audit_report(*, simulate_enabled_stub: bool = False) -> dict[str, Any]:
@@ -109,6 +109,7 @@ def run_solver_governance_workflow(db: Session, *, simulate_enabled_stub: bool) 
                 "class": adapter.__class__.__name__,
                 "version": getattr(adapter, "version", ""),
                 "external_placeholder": isinstance(adapter, UnsupportedExternalSolverAdapter),
+                "external_cli_adapter": adapter.__class__.__name__ in {"PackingSolverAdapter", "SparrowSolverAdapter"},
                 "supports_sample": adapter.supports(sample_job),
             }
         )
@@ -152,6 +153,7 @@ def run_solver_governance_workflow(db: Session, *, simulate_enabled_stub: bool) 
             "adapter_count": len(adapter_rows),
             "registered_names": sorted(row["name"] for row in adapter_rows),
             "external_placeholder_names": sorted(row["name"] for row in adapter_rows if row["external_placeholder"]),
+            "external_cli_adapter_names": sorted(row["name"] for row in adapter_rows if row["external_cli_adapter"]),
             "rows": sorted(adapter_rows, key=lambda row: row["name"]),
         },
     }
@@ -321,9 +323,10 @@ def validate_workflow(report: dict[str, Any]) -> list[dict[str, Any]]:
             f"adapters={adapters.get('registered_names')}",
         ),
         check_result(
-            "external adapters remain placeholders",
-            adapters.get("external_placeholder_names") == sorted(item["name"] for item in repository.DEFAULT_SOLVER_REGISTRY if item["name"] != schemas.SolverName.rectpack.value),
-            f"placeholders={adapters.get('external_placeholder_names')}",
+            "external adapters default safely",
+            adapters.get("external_placeholder_names") == expected_placeholder_solver_names()
+            and adapters.get("external_cli_adapter_names") == expected_external_cli_adapter_names(),
+            f"placeholders={adapters.get('external_placeholder_names')} cli={adapters.get('external_cli_adapter_names')}",
         ),
         check_result("rectpack solution valid", bool(rectpack.get("valid")), f"status={rectpack.get('solution_status')}"),
         check_result(
@@ -476,15 +479,20 @@ def validate_solver_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
             code="adapters.placeholder_boundary",
             status="passed"
             if sorted(adapters.get("registered_names") or []) == expected_names
-            and sorted(adapters.get("external_placeholder_names") or []) == expected_external_names
+            and sorted(adapters.get("external_placeholder_names") or []) == expected_placeholder_solver_names()
+            and sorted(adapters.get("external_cli_adapter_names") or []) == expected_external_cli_adapter_names()
             else "failed",
-            message="orchestrator registers all solvers while external adapters remain placeholders"
+            message="orchestrator registers all solvers while external adapters default to safe placeholder or CLI-contract mode"
             if sorted(adapters.get("registered_names") or []) == expected_names
-            and sorted(adapters.get("external_placeholder_names") or []) == expected_external_names
-            else "orchestrator must register all solvers and keep external adapters as placeholders",
+            and sorted(adapters.get("external_placeholder_names") or []) == expected_placeholder_solver_names()
+            and sorted(adapters.get("external_cli_adapter_names") or []) == expected_external_cli_adapter_names()
+            else "orchestrator must register all solvers and keep external adapters safe by default",
             evidence={
                 "registered_names": sorted(adapters.get("registered_names") or []),
                 "external_placeholder_names": sorted(adapters.get("external_placeholder_names") or []),
+                "external_cli_adapter_names": sorted(adapters.get("external_cli_adapter_names") or []),
+                "expected_placeholder_names": expected_placeholder_solver_names(),
+                "expected_external_cli_adapter_names": expected_external_cli_adapter_names(),
                 "expected_external_names": expected_external_names,
             },
         ),
@@ -582,6 +590,14 @@ def expected_solver_names() -> list[str]:
 
 def expected_external_solver_names() -> list[str]:
     return sorted(str(item["name"]) for item in repository.DEFAULT_SOLVER_REGISTRY if item["name"] != schemas.SolverName.rectpack.value)
+
+
+def expected_placeholder_solver_names() -> list[str]:
+    return sorted([schemas.SolverName.ortools.value, schemas.SolverName.phoenix.value])
+
+
+def expected_external_cli_adapter_names() -> list[str]:
+    return sorted([schemas.SolverName.packing_solver.value, schemas.SolverName.sparrow.value])
 
 
 def is_unconfigured_solver_version(value: Any) -> bool:

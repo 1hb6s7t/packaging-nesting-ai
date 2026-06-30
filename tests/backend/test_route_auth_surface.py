@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = REPO_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.api.router import api_router
+from app.api.router import api_router  # noqa: E402
 
 
 PUBLIC_ROUTES = {
@@ -16,7 +16,6 @@ PUBLIC_ROUTES = {
     ("GET", "/health/ready"),
     ("POST", "/auth/login"),
     ("POST", "/artworks/preflight"),
-    ("GET", "/ai/tools"),
 }
 TOKEN_AUTH_ROUTES = {
     ("POST", "/artworks/conversion-jobs/{job_id}/callback"),

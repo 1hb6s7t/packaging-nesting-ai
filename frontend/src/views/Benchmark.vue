@@ -9,6 +9,7 @@ type BenchmarkCase = {
   source?: string;
   sheet: Record<string, unknown>;
   items: Array<Record<string, unknown>>;
+  planning_mode?: "single_sheet" | "pattern" | "expanded";
   baseline_utilization_rate?: number | null;
   created_at?: string;
   updated_at?: string;
@@ -18,10 +19,22 @@ type BenchmarkRun = {
   run_id: string;
   case_id: string;
   solver_name: string;
+  planning_mode: "single_sheet" | "pattern" | "expanded";
   utilization_rate: number;
   waste_rate: number;
   runtime_ms: number;
   valid: boolean;
+  hard_rule_pass: boolean;
+  quantity_fulfillment_rate: number;
+  requested_units: number;
+  produced_units: number;
+  shortage_units: number;
+  overproduction_units: number;
+  units_per_sheet: number;
+  sheets_used: number;
+  export_ok: boolean;
+  case_score: number;
+  p95_runtime_ms?: number | null;
   failure_reason?: string | null;
   created_at?: string;
 };
@@ -46,20 +59,28 @@ const runs = ref<BenchmarkRun[]>([]);
 const benchmarkTasks = ref<WorkTask[]>([]);
 const selectedCaseId = ref("");
 
+function templateId(prefix: string) {
+  return `${prefix}_${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`;
+}
+
+const templateCaseId = templateId("baseline_case");
+
 const caseJson = ref(
   JSON.stringify(
     {
-      case_id: "bench_demo",
-      name: "Demo benchmark",
+      case_id: templateCaseId,
+      name: "787x1092 MOQ benchmark template",
+      planning_mode: "pattern",
       sheet: {
-        sheet_id: "bench_sheet_500_400",
-        width: 500,
-        height: 400,
-        margin_top: 5,
-        margin_right: 5,
-        margin_bottom: 5,
-        margin_left: 5,
-        gripper_mm: 10,
+        sheet_id: "sheet_787_1092",
+        name: "787x1092",
+        width: 787,
+        height: 1092,
+        margin_top: 10,
+        margin_right: 10,
+        margin_bottom: 10,
+        margin_left: 10,
+        gripper_mm: 20,
         material: "white_card",
         thickness: "350gsm"
       },
@@ -67,8 +88,12 @@ const caseJson = ref(
         {
           item_id: "bench_item_1",
           order_id: "bench_order_1",
-          polygon: { shape_id: "bench_shape_1", outer: [[0, 0], [100, 0], [100, 80], [0, 80]] },
-          priority_score: 0.9
+          polygon: { shape_id: "bench_shape_1", outer: [[0, 0], [80, 0], [80, 60], [0, 60]] },
+          quantity: 1000,
+          priority_score: 0.9,
+          allowed_rotations: [0, 90],
+          min_gap_mm: 2,
+          bleed_mm: 1
         }
       ],
       baseline_utilization_rate: 0.1
@@ -82,6 +107,11 @@ const validRunCount = computed(() => runs.value.filter((row) => row.valid).lengt
 const averageUtilization = computed(() => {
   if (!runs.value.length) return "0.0000";
   const total = runs.value.reduce((sum, row) => sum + Number(row.utilization_rate || 0), 0);
+  return (total / runs.value.length).toFixed(4);
+});
+const averageFulfillment = computed(() => {
+  if (!runs.value.length) return "0.0000";
+  const total = runs.value.reduce((sum, row) => sum + Number(row.quantity_fulfillment_rate || 0), 0);
   return (total / runs.value.length).toFixed(4);
 });
 
@@ -180,6 +210,7 @@ function editCase(row: BenchmarkCase) {
     {
       case_id: row.case_id,
       name: row.name,
+      planning_mode: row.planning_mode || "single_sheet",
       sheet: row.sheet,
       items: row.items,
       baseline_utilization_rate: row.baseline_utilization_rate
@@ -224,6 +255,10 @@ onMounted(loadAll);
         <div class="metric-label">平均利用率</div>
         <div class="metric-value">{{ averageUtilization }}</div>
       </div>
+      <div class="metric">
+        <div class="metric-label">Avg fulfillment</div>
+        <div class="metric-value">{{ averageFulfillment }}</div>
+      </div>
     </div>
 
     <div class="two-column">
@@ -253,6 +288,7 @@ onMounted(loadAll);
         <div class="band-heading">案例列表</div>
         <el-table v-loading="loading" :data="cases" border>
           <el-table-column prop="case_id" label="Case ID" min-width="150" />
+          <el-table-column prop="planning_mode" label="Mode" width="120" />
           <el-table-column prop="name" label="名称" min-width="160" />
           <el-table-column prop="source" label="来源" width="100" />
           <el-table-column prop="baseline_utilization_rate" label="基线" width="90" />
@@ -291,6 +327,11 @@ onMounted(loadAll);
         <el-table-column prop="created_at" label="时间" min-width="170" />
         <el-table-column prop="case_id" label="Case ID" min-width="150" />
         <el-table-column prop="solver_name" label="Solver" min-width="140" />
+        <el-table-column prop="planning_mode" label="Mode" width="120" />
+        <el-table-column prop="quantity_fulfillment_rate" label="Fulfillment" width="110" />
+        <el-table-column prop="units_per_sheet" label="Units/sheet" width="110" />
+        <el-table-column prop="sheets_used" label="Sheets" width="90" />
+        <el-table-column prop="case_score" label="Score" width="90" />
         <el-table-column prop="utilization_rate" label="利用率" width="100" />
         <el-table-column prop="waste_rate" label="浪费率" width="100" />
         <el-table-column prop="runtime_ms" label="耗时 ms" width="100" />

@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+
+REQUIRED_HANDOFF_ARTIFACT_NAMES = {
+    "release_preflight_report",
+    "release_preflight_verification",
+    "release_evidence_manifest",
+    "release_evidence_verification",
+    "release_evidence_artifact:deployment_compose_audit",
+    "release_evidence_artifact:repository_hygiene_audit",
+    "release_evidence_artifact:customer_sandbox_audit",
+    "release_evidence_artifact:notification_channel_audit",
+    "release_evidence_artifact:storage_export_audit",
+    "release_evidence_artifact:conversion_supplier_audit",
+    "release_evidence_artifact:solver_governance_audit",
+    "release_evidence_artifact:production_env_audit",
+    "release_evidence_artifact:external_acceptance_audit",
+    "dependency_inventory",
+    "dependency_review_audit",
+}
 
 
 def verify_release_handoff_bundle(
@@ -29,6 +49,20 @@ def verify_release_handoff_bundle(
     if not isinstance(artifacts, list):
         artifacts = []
         manifest_errors.append("handoff manifest artifacts must be a list")
+
+    manifest_error_items, manifest_error_field_errors = manifest_string_list(manifest, "errors")
+    manifest_warning_items, manifest_warning_field_errors = manifest_string_list(manifest, "warnings")
+    manifest_errors.extend(manifest_error_field_errors)
+    manifest_errors.extend(manifest_warning_field_errors)
+    manifest_errors.extend(validate_artifact_index(artifacts))
+    manifest_errors.extend(
+        validate_manifest_summary(
+            manifest,
+            artifacts,
+            manifest_error_items=manifest_error_items,
+            manifest_warning_items=manifest_warning_items,
+        )
+    )
 
     artifact_base_dir = resolve_base_dir(base_dir, manifest, resolved_manifest_path)
     checks = [
@@ -62,6 +96,129 @@ def verify_release_handoff_bundle(
         "manifest_errors": manifest_errors,
         "checks": checks,
     }
+
+
+def manifest_string_list(manifest: dict[str, Any], field_name: str) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    if field_name not in manifest:
+        return [], [f"handoff manifest {field_name} must be present"]
+    value = manifest.get(field_name)
+    if not isinstance(value, list):
+        return [], [f"handoff manifest {field_name} must be a list"]
+    items: list[str] = []
+    invalid_indexes: list[int] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            items.append(item)
+        else:
+            invalid_indexes.append(index)
+    if invalid_indexes:
+        joined = ", ".join(str(index) for index in invalid_indexes)
+        errors.append(f"handoff manifest {field_name} must contain only strings; invalid index(es): {joined}")
+    return items, errors
+
+
+def validate_artifact_index(artifacts: list[Any]) -> list[str]:
+    errors: list[str] = []
+    names: list[str] = []
+    artifact_by_name: dict[str, dict[str, Any]] = {}
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            continue
+        name = artifact.get("name")
+        if not isinstance(name, str) or not name:
+            errors.append(f"handoff artifact entry at index {index} name is missing or invalid")
+            continue
+        names.append(name)
+        artifact_by_name[name] = artifact
+
+    duplicate_names = sorted(name for name, count in Counter(names).items() if count > 1)
+    if duplicate_names:
+        errors.append(f"handoff manifest has duplicate artifact names: {', '.join(duplicate_names)}")
+
+    missing_names = sorted(REQUIRED_HANDOFF_ARTIFACT_NAMES - set(names))
+    if missing_names:
+        errors.append(f"handoff manifest artifacts are missing expected entries: {', '.join(missing_names)}")
+    if "release_image_dependency_audit" in artifact_by_name:
+        verification = artifact_by_name.get("release_image_dependency_verification")
+        if verification is None:
+            errors.append(
+                "handoff manifest artifacts are missing paired entry: release_image_dependency_verification"
+            )
+        elif verification.get("status") != "passed":
+            errors.append(
+                "release image dependency verification artifact must be passed when release image dependency audit is included"
+            )
+    errors.extend(
+        validate_passed_audit_verification_pair(
+            artifact_by_name,
+            audit_name="dependency_review_audit",
+            verification_name="dependency_review_verification",
+        )
+    )
+    errors.extend(
+        validate_passed_audit_verification_pair(
+            artifact_by_name,
+            audit_name="release_evidence_artifact:production_env_audit",
+            verification_name="production_env_verification",
+        )
+    )
+    errors.extend(
+        validate_passed_audit_verification_pair(
+            artifact_by_name,
+            audit_name="release_evidence_artifact:external_acceptance_audit",
+            verification_name="external_acceptance_verification",
+        )
+    )
+    return errors
+
+
+def validate_passed_audit_verification_pair(
+    artifact_by_name: dict[str, dict[str, Any]],
+    *,
+    audit_name: str,
+    verification_name: str,
+) -> list[str]:
+    audit = artifact_by_name.get(audit_name)
+    if audit is None or audit.get("status") != "passed":
+        return []
+    verification = artifact_by_name.get(verification_name)
+    if verification is None:
+        return [f"handoff manifest artifacts are missing paired entry: {verification_name}"]
+    if verification.get("status") != "passed":
+        return [f"{verification_name} artifact must be passed when {audit_name} is passed"]
+    return []
+
+
+def validate_manifest_summary(
+    manifest: dict[str, Any],
+    artifacts: list[Any],
+    *,
+    manifest_error_items: list[str],
+    manifest_warning_items: list[str],
+) -> list[str]:
+    summary = manifest.get("summary")
+    if not isinstance(summary, dict):
+        return ["handoff manifest summary must be an object"]
+
+    artifact_items = [artifact for artifact in artifacts if isinstance(artifact, dict)]
+    expected = {
+        "artifact_count": len(artifact_items),
+        "required_count": sum(1 for artifact in artifact_items if bool(artifact.get("required"))),
+        "passed_count": sum(1 for artifact in artifact_items if artifact.get("status") == "passed"),
+        "skipped_count": sum(1 for artifact in artifact_items if artifact.get("status") == "skipped"),
+        "missing_count": sum(1 for artifact in artifact_items if artifact.get("status") == "missing"),
+        "failed_count": sum(1 for artifact in artifact_items if artifact.get("status") == "failed"),
+        "error_count": len(manifest_error_items),
+        "warning_count": len(manifest_warning_items),
+    }
+    errors: list[str] = []
+    for key, expected_value in expected.items():
+        if summary.get(key) != expected_value:
+            errors.append(
+                f"handoff manifest summary.{key} must be {expected_value}, got {summary.get(key)!r}"
+            )
+    return errors
 
 
 def verify_handoff_artifact(

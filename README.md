@@ -8,7 +8,7 @@
 - 文件转换作业记录：`file_conversion_job` 保存源格式、目标格式、状态、SLA 元数据、供应商回调 token hash/尾号/轮换记录、异常码映射和人工/外部转换日志；读取接口会遮蔽历史明文 token，只暴露 hash/尾号等审计摘要；成功结果会回写 normalized SVG/DXF、`artwork_version` 和 Polygon JSON，逾期作业会标记为 `overdue` 并写入站内通知
 - SVG `rect/polygon/polyline/path/circle/ellipse` 基础解析，DXF `LWPOLYLINE/LINE` 闭环基础解析
 - CSV/XLSX 订单文件上传导入
-- Polygon JSON、Shapely 精确几何计算（多边形相交、包含、间距、差集空白面积、offset、自交修复）、规则引擎、规则集版本化、SolverAdapter、Validator、SVG 预览、报告
+- Polygon JSON、Shapely 精确几何计算（多边形相交、包含、间距、差集空白面积、offset、自交修复）、规则引擎、规则集版本化、SolverAdapter、Validator、SVG 预览、报告；创建拼版任务会拒绝空候选和重复 item_id，Validator 同时校验候选项必须且只能处于 placed/unplaced 之一，阻断重复 job item、重复放置、重复未放置、漏报、未知 item 引用、order_id 不一致和空 unplaced 原因；方案报告会输出 validation 摘要、issue code、放置/未放置明细和 waste 成本估算
 - solver_run / solver_run_log 运行生命周期记录
 - operation_log 写操作审计查询
 - 默认管理员登录、Bearer Token 鉴权、基础 RBAC 权限校验和企业角色模板
@@ -25,7 +25,7 @@
 - 系统集成：CRM/MES/ERP/商业 Solver 外部系统、Adapter 配置版本、启用状态、配置校验、客户字段验收、组织编码/收件组验收、上线数据字典签核、CRM 字段映射同步、MES/ERP 记录快照同步、排程/库存/交付确认领域归档、ERP 库存快照驱动物料放行、MES 排程和 ERP 交付闭环检查、HTTP 认证/分页拉取、增量游标、客户侧状态字典、失败重试队列、HTTP 回写确认、同步任务和回写日志持久化
 - Solver 治理：`solver_registry` 自动种子，管理 Solver 启用状态、版本和许可证策略，运行求解前会检查 Solver 是否启用且不是未配置的外部 stub
 - Benchmark：基准案例和运行结果写入 `benchmark_case` / `benchmark_run`，前端可保存案例、运行 Solver 并查看历史指标
-- Rectpack 风格确定性 MVP Solver；OR-Tools、PackingSolver、Sparrow、Phoenix Adapter 已注册为待配置，未替换 `external-adapter-stub-*` 版本前不能启用或运行
+- Rectpack 风格确定性内置 Solver；OR-Tools、PackingSolver、Sparrow、Phoenix Adapter 已注册为待配置，未替换 `external-adapter-stub-*` 版本前不能启用或运行
 - AI Assistant 提供受控工具执行：`/api/ai/tools/execute` 可审计地调用订单查询、图形读取、纸张规格、Solver、Validator、方案对比和报告生成；生产导出、CRM 回写和 AI 直接创建拼版任务保持阻断，不生成或绕过生产坐标
 
 ## 本地运行
@@ -58,9 +58,11 @@ pytest -q tests\backend
 python scripts\release_preflight.py
 ```
 
+企业级最终完善说明见 `docs/ENTERPRISE_FINALIZATION.md`，其中汇总了批量排产模式、787x1092 benchmark 门禁、公开数据集导入、外部 CLI Solver 契约和 AI 工具治理边界。
+
 默认会运行后端发布门禁测试、仓库忽略规则审计、集成/审计脱敏回归、本地交付证据包生成与完整性验证、前端生产构建和临时 API 健康冒烟；API 冒烟默认自动选择可用本地端口，需要固定端口时使用 `--smoke-port 8030`；需要完整后端回归时使用 `python scripts\release_preflight.py --full-backend`，仅调试测试/构建时可用 `--skip-evidence-pack` 跳过证据包门禁。
 交付留痕时可追加 `--report-path artifacts\release-preflight.json`，脚本会写出 JSON 报告，记录后端测试、证据包生成与验证、前端构建、API 冒烟实际端口和返回内容、依赖/许可证摘要、`backend`/`tests`/`scripts` 的 pycache 清理结果、耗时和失败原因；证据包 gate 的 payload 会嵌入 manifest/verification 摘要、artifact 相对路径、字节数和 SHA-256，便于只看 preflight 报告也能判断交付包完整性；如需完整依赖清单，可追加 `--inventory-path artifacts\dependency-inventory.json`，证据包默认写入 `tmp\release-preflight-evidence`，可用 `--evidence-output-dir` 改到指定目录。
-生成 preflight 报告后可运行 `python scripts\verify_release_preflight.py --report artifacts\release-preflight.json --output artifacts\release-preflight-verification.json`，对报告 `passed` 状态、必需 gate、证据包 payload、API 冒烟、pycache 清理和依赖摘要执行离线复核；如果要把生产 env 审计纳入证据包门禁，可在 preflight 上追加 `--env-file .env.production --require-production-env`。如果要把依赖人工复核项作为阻断，可在 preflight 或 verifier 上追加 `--fail-on-dependency-review`；如果当前 release image 中仍有需要人工确认的依赖，但上线流程允许通过签核放行，可在 preflight 上追加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，把复核签核纳入证据包门禁。真实客户沙箱、通知/转换供应商、存储切换和生产部署验收完成后，可追加 `--external-acceptance-file artifacts\external-acceptance.json --require-external-acceptance`，把外部验收签核纳入证据包门禁。
+生成 preflight 报告后可运行 `python scripts\verify_release_preflight.py --report artifacts\release-preflight.json --output artifacts\release-preflight-verification.json`，对报告 `passed` 状态、必需 gate、证据包 payload、API 冒烟、pycache 清理和依赖摘要执行离线复核；证据包门禁启用时会在 release evidence 目录同步生成 `dependency-review-verification.json`，preflight 离线复核会要求依赖审计通过时对应 verifier gate 也通过；如果要把生产 env 审计纳入证据包门禁，可在 preflight 上追加 `--env-file .env.production --require-production-env`。如果要把依赖人工复核项作为阻断，可在 preflight 或 verifier 上追加 `--fail-on-dependency-review`；如果当前 release image 中仍有需要人工确认的依赖，但上线流程允许通过签核放行，可在 preflight 上追加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，把复核签核纳入证据包门禁。真实客户沙箱、通知/转换供应商、存储切换和生产部署验收完成后，可追加 `--external-acceptance-file artifacts\external-acceptance.json --require-external-acceptance`，把外部验收签核纳入证据包门禁。
 
 本地交付证据包：
 
@@ -68,42 +70,46 @@ python scripts\release_preflight.py
 python scripts\release_evidence_pack.py --output-dir artifacts\release-evidence --env-file .env.production
 ```
 
-该命令会生成 `release-evidence-pack.json` 汇总清单，并在同一目录写入生产 env 脱敏审计、仓库忽略规则审计、客户沙箱样本验收、通知通道验收、存储导出恢复演练、转换供应商验收、Solver 治理验收、外部验收签核、依赖/许可证清单和依赖复核审计；清单会记录每个已生成 artifact 的路径、字节数和 SHA-256，便于交付后核对文件完整性；每个生成报告都会附带 `sensitive_scan`，输出前会遮蔽 password、token、secret、api key、webhook URL 和 URL 密码/敏感 query，发现未脱敏敏感值时证据包失败；没有生产 env 文件时可省略 `--env-file`，清单会把生产 env 审计标记为 skipped；没有真实外部验收文件时，外部验收签核会标记为 skipped；上线门禁要求生产 env 审计时追加 `--require-production-env`，要求真实外部验收签核时追加 `--external-acceptance-file artifacts\external-acceptance.json --require-external-acceptance`。
+该命令会生成 `release-evidence-pack.json` 汇总清单，并在同一目录写入生产 env 脱敏审计、仓库忽略规则审计、客户沙箱样本验收、通知通道验收、存储导出恢复演练、转换供应商验收、Solver 治理验收、外部验收签核、依赖/许可证清单和依赖复核审计；清单会记录每个已生成 artifact 的路径、字节数和 SHA-256，便于交付后核对文件完整性；manifest 顶层会输出 `policy_contract`，校验证据包 schema、必需 artifact 集合、required/skipped 边界、完整性字段、敏感信息扫描、底层 artifact 契约摘要和依赖复核签核状态；本地 Compose 演示凭据、release image 前的缺包装态或尚未提供依赖复核签核会保留为 warning，契约 failed 会阻断证据包；每个生成报告都会附带 `sensitive_scan`，输出前会遮蔽 password、token、secret、api key、webhook URL 和 URL 密码/敏感 query，发现未脱敏敏感值时证据包失败；没有生产 env 文件时可省略 `--env-file`，清单会把生产 env 审计标记为 skipped；没有真实外部验收文件时，外部验收签核会标记为 skipped；上线门禁要求生产 env 审计时追加 `--require-production-env`，要求依赖复核签核时追加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，要求真实外部验收签核时追加 `--external-acceptance-file artifacts\external-acceptance.json --require-external-acceptance`。
 证据包还会默认生成 `deployment-compose-audit.json` 和 `repository-hygiene-audit.json`，分别离线检查 Docker Compose 必需服务、healthcheck、`depends_on` 顺序、外部镜像 tag、后端 MinIO/Celery 运行环境、后端镜像 `.[optimization]` 依赖安装面、前端 `package-lock.json` + `npm ci` 构建约束，以及 `.gitignore` 对本地密钥、运行数据库、日志、tmp 和 artifacts 的忽略规则；Compose 中的 `packaging/packaging`、`minioadmin/minioadmin` 仅作为本地演示 warning 保留，但任一服务声明 `APP_ENV=production` 时仍检测到这些默认值会阻断证据包。
-交付、上传或归档后可运行 `python scripts\verify_release_evidence_pack.py --manifest artifacts\release-evidence\release-evidence-pack.json --output artifacts\release-evidence\release-evidence-verification.json`，按 manifest 中的相对路径、字节数和 SHA-256 重新核对 artifact；即使某些可选报告业务状态为 skipped，只要清单中记录了文件路径、字节数和 SHA-256，也会执行完整性校验。缺失、篡改或未通过的证据包都会返回非零退出码。
+交付、上传或归档后可运行 `python scripts\verify_release_evidence_pack.py --manifest artifacts\release-evidence\release-evidence-pack.json --output artifacts\release-evidence\release-evidence-verification.json`，按 manifest 中的相对路径、字节数和 SHA-256 重新核对 artifact，并复核 manifest 顶层 `policy_contract`、summary 计数和预期 artifact 集合；即使某些可选报告业务状态为 skipped，只要清单中记录了文件路径、字节数和 SHA-256，也会执行完整性校验。缺失、篡改、契约缺失/失败或未通过的证据包都会返回非零退出码。
 
 顶层交付索引：
 ```powershell
-python scripts\release_handoff_bundle.py --preflight-report artifacts\release-preflight.json --preflight-verification artifacts\release-preflight-verification.json --output artifacts\release-handoff-bundle.json
+python scripts\release_handoff_bundle.py --preflight-report artifacts\release-preflight.json --preflight-verification artifacts\release-preflight-verification.json --production-env-verification artifacts\release-evidence\production-env-verification.json --external-acceptance-verification artifacts\release-evidence\external-acceptance-verification.json --output artifacts\release-handoff-bundle.json
 python scripts\verify_release_handoff_bundle.py --manifest artifacts\release-handoff-bundle.json --output artifacts\release-handoff-verification.json
 python scripts\go_live_readiness_audit.py --handoff-manifest artifacts\release-handoff-bundle.json --handoff-verification artifacts\release-handoff-verification.json --output artifacts\go-live-readiness.json
 python scripts\go_live_remediation_packet.py --go-live-report artifacts\go-live-readiness.json --output-dir artifacts\go-live-remediation
 ```
 
-第一条命令会从 preflight 报告中派生证据包 manifest 和证据包校验报告路径，再把 preflight、preflight 离线复核、证据包 manifest、证据包完整性复核、证据包内各项 JSON artifact、依赖清单和依赖复核审计汇总为一个带 SHA-256 的 handoff manifest；第二条命令会按 handoff manifest 中的相对路径、字节数和 SHA-256 重新核对交付文件。必需报告未通过、证据 artifact 缺失或损坏时会返回非零退出码；交付目录被复制到其他位置后，可在 verifier 上追加 `--base-dir <交付目录>`。第三条命令用于上线前最终判定，会要求 handoff verifier 已通过且 verifier 的 `manifest_path` 指向当前 handoff manifest，并要求仓库卫生审计、生产 env 审计、外部验收签核、依赖清单和依赖复核审计都通过；本地交付包即使 manifest 状态为 passed，只要没有传入匹配且通过的 handoff verification、go-live 证据仍为 skipped 或依赖清单仍有缺失安装项，`go_live_readiness_audit.py` 就会返回 failed。若 go-live 仍失败，第四条命令会生成 `production-env.template`、带应用密钥的 `production-env.draft`、脱敏 draft 报告、`external-acceptance.template.json`、外部证据目录说明和 `run-go-live-evidence.ps1`，用于补齐真实生产 env 与外部验收证据后重跑最终门禁。生成的 PowerShell 脚本会显式检查每个原生 `python` 命令的退出码，并在第一处失败时停止，避免后续产物掩盖首个失败原因。补齐 `.env.production` 和 `external-acceptance.draft.json` 后，可先运行 `python scripts\go_live_remediation_packet.py --audit-packet artifacts\go-live-remediation --output artifacts\go-live-remediation\go-live-remediation-readiness.json`；该审计会刷新外部证据大小/SHA-256，写出生产 env 与外部验收审计报告；如果真实输入缺失或证据刷新失败，会清理当前补证包目录内过期的生产 env/外部验收审计输出，避免旧产物被误当成当前证据；结果为 `ready` 后再进入较重的 release image 与 preflight 门禁。
+第一条命令会从 preflight 报告中派生证据包 manifest 和证据包校验报告路径，再把 preflight、preflight 离线复核、证据包 manifest、证据包完整性复核、证据包内各项 JSON artifact、依赖清单、依赖复核审计、依赖复核 verifier、生产 env verifier 和外部验收 verifier 汇总为一个带 SHA-256 的 handoff manifest；handoff 会保留 evidence manifest 中的 artifact summary，便于最终门禁复核底层契约和敏感扫描结果。第二条命令会校验 handoff manifest 的必备 artifact 集合、重复名称、summary/errors/warnings 一致性，并按相对路径、字节数和 SHA-256 重新核对交付文件；当依赖复核、生产 env 或外部验收审计 artifact 为 passed 时，对应 verifier artifact 也必须存在且为 passed。必需报告未通过、证据 artifact 缺失或损坏时会返回非零退出码；交付目录被复制到其他位置后，可在 verifier 上追加 `--base-dir <交付目录>`。第三条命令用于上线前最终判定，会要求 handoff verifier 已通过且 verifier 的 `manifest_path` 指向当前 handoff manifest，并要求仓库卫生、客户沙箱、通知通道、存储导出、转换供应商、Solver 治理、生产 env、外部验收签核、依赖清单、依赖复核、依赖复核 verifier、release image 依赖审计、release image 依赖 verifier、生产 env verifier 和外部验收 verifier 都通过；本地交付包即使 manifest 状态为 passed，只要没有传入匹配且通过的 handoff verification、go-live 证据仍为 skipped、底层 artifact 契约/敏感扫描失败、任一 verifier `report_status` 非 `passed` 或 `error_count` 非 0，或依赖清单仍有缺失安装项，`go_live_readiness_audit.py` 就会返回 failed。若 go-live 仍失败，第四条命令会生成 `production-env.template`、带应用密钥的 `production-env.draft`、脱敏 draft 报告、`external-acceptance.template.json`、外部证据目录说明和 `run-go-live-evidence.ps1`，用于补齐真实生产 env 与外部验收证据后重跑最终门禁。生成的 PowerShell 脚本会显式检查每个原生 `python` 命令的退出码，并在第一处失败时停止，避免后续产物掩盖首个失败原因。补齐 `.env.production` 和 `external-acceptance.draft.json` 后，可先运行 `python scripts\go_live_remediation_packet.py --audit-packet artifacts\go-live-remediation --output artifacts\go-live-remediation\go-live-remediation-readiness.json`；该审计会刷新外部证据大小/SHA-256，写出生产 env 与外部验收审计报告；如果真实输入缺失或证据刷新失败，会清理当前补证包目录内过期的生产 env/外部验收审计输出，避免旧产物被误当成当前证据；结果为 `ready` 后再进入较重的 release image 与 preflight 门禁。
 
 依赖/许可证清单：
 
 ```powershell
 python scripts\release_inventory.py --output artifacts\dependency-inventory.json
 python scripts\release_image_dependency_audit.py --inventory-output artifacts\dependency-inventory-release-image.json --review-output artifacts\dependency-review-audit-release-image.json --output artifacts\release-image-dependency-audit.json
+python scripts\verify_dependency_review_audit.py --report artifacts\dependency-review-audit-release-image.json --output artifacts\dependency-review-verification-release-image.json
+python scripts\verify_release_image_dependency_audit.py --report artifacts\release-image-dependency-audit.json --output artifacts\release-image-dependency-verification.json
 ```
 
-该清单会解析 `backend/pyproject.toml` 和 `frontend/package-lock.json`，输出 Python/NPM 依赖、版本、声明范围、许可证字段和需人工复核的 GPL/AGPL/LGPL/未知许可证项；Python 许可证优先读取 `License-Expression`，当前环境未安装的声明依赖会标为 `installed=false` 并计入 `missing_install_count`，上线前应在正式 release image 中重新生成清单。如果 preflight/verifier 的 warning 明确写着本机缺少 release-blocking package，应以 release image 依赖清单和复核审计覆盖本地清单，而不是把它当作真实许可证待审。后端 release image 通过 `pip install --no-cache-dir ".[optimization]" "psycopg[binary]"` 安装运行依赖和优化 extra，避免 `ortools`、`rectpack` 等声明依赖在 go-live 清单中继续缺失。`release_image_dependency_audit.py` 会构建后端镜像，在容器内生成 `dependency-inventory-release-image.json`、`dependency-review-audit-release-image.json` 和 `release-image-dependency-audit.json`；正式 handoff 时应把这三个文件分别传给 `release_handoff_bundle.py --dependency-inventory ... --dependency-review-audit ... --release-image-dependency-audit ...`，用 release image 证据覆盖本地开发环境清单并留存镜像审计总报告。
+该清单会解析 `backend/pyproject.toml` 和 `frontend/package-lock.json`，输出 Python/NPM 依赖、版本、声明范围、许可证字段和需人工复核的 GPL/AGPL/LGPL/未知许可证项；Python 许可证优先读取 `License-Expression`，当前环境未安装的声明依赖会标为 `installed=false` 并计入 `missing_install_count`，上线前应在正式 release image 中重新生成清单。如果 preflight/verifier 的 warning 明确写着本机缺少 release-blocking package，应以 release image 依赖清单和复核审计覆盖本地清单，而不是把它当作真实许可证待审。后端 release image 通过 `pip install --no-cache-dir ".[optimization]" "psycopg[binary]"` 安装运行依赖和优化 extra，避免 `ortools`、`rectpack` 等声明依赖在 go-live 清单中继续缺失。`release_image_dependency_audit.py` 会构建后端镜像，在容器内生成 `dependency-inventory-release-image.json`、`dependency-review-audit-release-image.json` 和 `release-image-dependency-audit.json`；`verify_dependency_review_audit.py` 会离线复核镜像内生成的依赖复核审计，`verify_release_image_dependency_audit.py` 会离线复核该总报告的命令摘要、policy contract、summary 计数和 inventory/review 输出文件摘要是否一致。正式 handoff 时应把这五个文件分别传给 `release_handoff_bundle.py --dependency-inventory ... --dependency-review-audit ... --dependency-review-verification ... --release-image-dependency-audit ... --release-image-dependency-verification ...`，用 release image 证据覆盖本地开发环境清单并留存镜像依赖复核、镜像审计总报告及其离线复核结果。
 
 依赖人工复核确认：
 ```powershell
 python scripts\dependency_review_template.py --inventory artifacts\dependency-inventory.json --output artifacts\dependency-review.json
 python scripts\dependency_review_audit.py --inventory artifacts\dependency-inventory.json --review-file artifacts\dependency-review.json --require-review-file --output artifacts\dependency-review-audit.json
+python scripts\verify_dependency_review_audit.py --report artifacts\dependency-review-audit.json --output artifacts\dependency-review-verification.json
 ```
 
-第一条命令会按当前 inventory 生成 `pending` 模板，避免手写条目漏填或版本/许可证不匹配；交付负责人或法务必须补齐 `reviewer`、带时区的 ISO `reviewed_at`，把每个 `decision` 改为 `approved` 并填写非空 `reason` 后，第二条审计才会通过。`dependency-review.json` 使用 `schema_version=1`，`entries` 中每个条目必须匹配当前 inventory 的 `ecosystem/name/scope/version/license`；可选 `expires_at` 必须是带时区的 ISO datetime，过期后会重新阻断。证据包可追加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，生成 `dependency-review-audit.json` 并要求该 artifact 通过。
+第一条命令会按当前 inventory 生成 `pending` 模板，避免手写条目漏填或版本/许可证不匹配；交付负责人或法务必须补齐 `reviewer`、带时区的 ISO `reviewed_at`，把每个 `decision` 改为 `approved` 并填写非空 `reason` 后，第二条审计才会通过。`dependency-review.json` 使用 `schema_version=1`，`entries` 中每个条目必须匹配当前 inventory 的 `ecosystem/name/scope/version/license`；可选 `expires_at` 必须是带时区的 ISO datetime，过期后会重新阻断。第三条命令会离线复核 `dependency-review-audit.json` 的明细计数、summary 和 `policy_contract` 是否一致，默认要求审计报告为 passed。证据包或 preflight 可追加 `--dependency-review-file artifacts\dependency-review.json --require-dependency-review`，生成 `dependency-review-audit.json`；preflight 的证据包门禁默认会额外生成 `dependency-review-verification.json`，并在依赖审计通过时要求该 verifier gate 通过。
 
 生产环境变量审计：
 
 ```powershell
 python scripts\production_env_audit.py --write-draft .env.production --output artifacts\production-env-draft-report.json
 python scripts\production_env_audit.py --env-file .env.production --output artifacts\production-env-audit.json
+python scripts\verify_production_env_audit.py --report artifacts\production-env-audit.json --env-file .env.production --output artifacts\production-env-verification.json
 python scripts\storage_export_audit.py --output artifacts\storage-export-audit.json
 python scripts\conversion_supplier_audit.py --output artifacts\conversion-supplier-audit.json
 python scripts\solver_governance_audit.py --output artifacts\solver-governance-audit.json
@@ -119,9 +125,10 @@ python scripts\solver_governance_audit.py --output artifacts\solver-governance-a
 python scripts\external_acceptance_audit.py --write-template artifacts\external-acceptance.draft.json
 python scripts\external_acceptance_audit.py --refresh-evidence-metadata artifacts\external-acceptance.draft.json --refreshed-output artifacts\external-acceptance.json --output artifacts\external-acceptance-refresh-report.json
 python scripts\external_acceptance_audit.py --acceptance-file artifacts\external-acceptance.json --require-acceptance-file --output artifacts\external-acceptance-audit.json
+python scripts\verify_external_acceptance_audit.py --report artifacts\external-acceptance-audit.json --base-dir artifacts --output artifacts\external-acceptance-verification.json
 ```
 
-第一条命令生成待签核 draft 模板，要求覆盖 `customer_integration_sandbox`、`notification_channel_sandbox`、`conversion_supplier_sandbox`、`storage_backend_cutover` 和 `production_deployment`。交付负责人必须补齐真实环境名、`reviewer`、带时区的 ISO `reviewed_at`（例如 `2026-06-29T10:00:00Z`），把每个 area 改为 `status=passed`，填写验收摘要和 `ticket`，并为每个相对路径真实证据文件填写 `description`；第二条命令会按实际文件自动刷新 `size_bytes` 和 SHA-256；第三条审计会验证证据文件存在、未逃逸目录、大小和 SHA-256 匹配。通过后可把刷新后的 `artifacts\external-acceptance.json` 传给 preflight 或 evidence pack 的 `--external-acceptance-file ... --require-external-acceptance`。
+第一条命令生成待签核 draft 模板，要求覆盖 `customer_integration_sandbox`、`notification_channel_sandbox`、`conversion_supplier_sandbox`、`storage_backend_cutover` 和 `production_deployment`。交付负责人必须补齐真实环境名、`reviewer`、带时区的 ISO `reviewed_at`（例如 `2026-06-29T10:00:00Z`），把每个 area 改为 `status=passed`，填写验收摘要和 `ticket`，并为每个相对路径真实证据文件填写 `description`；第二条命令会按实际文件自动刷新 `size_bytes` 和 SHA-256；第三条审计会验证证据文件存在、未逃逸目录、大小和 SHA-256 匹配；第四条会离线复核审计报告的 summary、policy contract 和已验证证据文件完整性。通过后可把刷新后的 `artifacts\external-acceptance.json` 传给 preflight 或 evidence pack 的 `--external-acceptance-file ... --require-external-acceptance`。
 
 迁移校验：
 
@@ -212,7 +219,7 @@ python scripts\solver_governance_audit.py --output artifacts\solver-governance-a
 - 不让大模型直接生成生产坐标，不让大模型判断几何是否合法。
 - 所有算法输入必须标准化为 Polygon JSON，单位为 mm。
 - 所有 Solver 输出必须经过 Validator 和审批，未验证或未批准方案不能导出生产文件。
-- MVP 优先支持 SVG/DXF；CDR/AI/PDF 通过人工导出或独立转换服务进入系统，核心服务记录转换作业、提交外部服务、支持供应商回调 token hash 鉴权与轮换、按异常码把失败归类为 `failed` 或 `manual_required`、接收 normalized SVG/DXF 结果、巡检 SLA 逾期并重新进入 Polygon 解析流程。
+- 直接几何解析优先支持 SVG/DXF；CDR/AI/PDF 通过人工导出或独立转换服务进入系统，核心服务记录转换作业、提交外部服务、支持供应商回调 token hash 鉴权与轮换、按异常码把失败归类为 `failed` 或 `manual_required`、接收 normalized SVG/DXF 结果、巡检 SLA 逾期并重新进入 Polygon 解析流程。
 - 规则表达式不执行任意 Python、内置函数、导入、方法调用或多级属性访问；非法表达式会写入规则执行错误。
 
 ## 目录

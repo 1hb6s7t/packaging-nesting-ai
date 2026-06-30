@@ -17,19 +17,46 @@ REQUIRED_PASSED_ARTIFACTS = {
     "release_evidence_verification": "release evidence verification",
     "release_evidence_artifact:deployment_compose_audit": "deployment compose audit",
     "release_evidence_artifact:repository_hygiene_audit": "repository hygiene audit",
+    "release_evidence_artifact:customer_sandbox_audit": "customer sandbox audit",
+    "release_evidence_artifact:notification_channel_audit": "notification channel audit",
+    "release_evidence_artifact:storage_export_audit": "storage export audit",
+    "release_evidence_artifact:conversion_supplier_audit": "conversion supplier audit",
+    "release_evidence_artifact:solver_governance_audit": "solver governance audit",
     "release_evidence_artifact:production_env_audit": "production env audit",
     "release_evidence_artifact:external_acceptance_audit": "external acceptance audit",
+    "production_env_verification": "production env verification",
+    "external_acceptance_verification": "external acceptance verification",
     "dependency_inventory": "dependency inventory",
     "dependency_review_audit": "dependency review audit",
+    "dependency_review_verification": "dependency review verification",
     "release_image_dependency_audit": "release image dependency audit",
+    "release_image_dependency_verification": "release image dependency verification",
 }
 POLICY_CONTRACT_ARTIFACTS = {
     "release_evidence_artifact:deployment_compose_audit": "deployment compose audit",
     "release_evidence_artifact:repository_hygiene_audit": "repository hygiene audit",
+    "release_evidence_artifact:customer_sandbox_audit": "customer sandbox audit",
+    "release_evidence_artifact:notification_channel_audit": "notification channel audit",
+    "release_evidence_artifact:storage_export_audit": "storage export audit",
+    "release_evidence_artifact:conversion_supplier_audit": "conversion supplier audit",
+    "release_evidence_artifact:solver_governance_audit": "solver governance audit",
     "release_evidence_artifact:production_env_audit": "production env audit",
     "release_evidence_artifact:external_acceptance_audit": "external acceptance audit",
     "dependency_review_audit": "dependency review audit",
     "release_image_dependency_audit": "release image dependency audit",
+}
+NESTED_CONTRACT_FIELDS = {
+    "release_evidence_artifact:production_env_audit": ("policy_contract",),
+    "release_evidence_artifact:deployment_compose_audit": ("policy_contract",),
+    "release_evidence_artifact:repository_hygiene_audit": ("policy_contract",),
+    "release_evidence_artifact:customer_sandbox_audit": ("pack_contract", "sync_strategy", "business_flow"),
+    "release_evidence_artifact:notification_channel_audit": ("policy_contract",),
+    "release_evidence_artifact:storage_export_audit": ("storage_contract", "policy_contract"),
+    "release_evidence_artifact:conversion_supplier_audit": ("policy_contract",),
+    "release_evidence_artifact:solver_governance_audit": ("policy_contract",),
+    "release_evidence_artifact:external_acceptance_audit": ("policy_contract",),
+    "dependency_review_audit": ("policy_contract",),
+    "release_image_dependency_audit": ("policy_contract",),
 }
 
 
@@ -58,6 +85,8 @@ def build_go_live_readiness_audit(
         checks.extend(artifact_policy_checks)
         dependency_checks = validate_dependency_readiness(manifest_payload)
         checks.extend(dependency_checks)
+        go_live_verification_checks = validate_go_live_verification_readiness(manifest_payload)
+        checks.extend(go_live_verification_checks)
 
     if resolved_verification is not None:
         try:
@@ -155,6 +184,18 @@ def validate_dependency_readiness(payload: dict[str, Any]) -> list[dict[str, Any
     inventory_summary = inventory.get("summary") if isinstance(inventory.get("summary"), dict) else {}
     review = artifacts.get("dependency_review_audit") or {}
     review_summary = review.get("summary") if isinstance(review.get("summary"), dict) else {}
+    review_verification = artifacts.get("dependency_review_verification") or {}
+    review_verification_summary = (
+        review_verification.get("summary")
+        if isinstance(review_verification.get("summary"), dict)
+        else {}
+    )
+    release_image_verification = artifacts.get("release_image_dependency_verification") or {}
+    release_image_verification_summary = (
+        release_image_verification.get("summary")
+        if isinstance(release_image_verification.get("summary"), dict)
+        else {}
+    )
     checks: list[dict[str, Any]] = []
 
     inventory_errors: list[str] = []
@@ -183,6 +224,76 @@ def validate_dependency_readiness(payload: dict[str, Any]) -> list[dict[str, Any
                 f"dependency review approved_count must match review_required_count: {approved_count} != {review_required_count}"
             )
     checks.append(check_result("dependency_review_signoff", review_errors, summary=dict(review_summary)))
+
+    review_verification_errors: list[str] = []
+    if review_verification_summary.get("report_status") not in {"passed", None}:
+        review_verification_errors.append("dependency review verification report_status must be passed")
+    if review_verification_summary.get("error_count") not in {0, None}:
+        review_verification_errors.append("dependency review verification summary has errors")
+    checks.append(
+        check_result(
+            "dependency_review_verification_summary",
+            review_verification_errors,
+            summary=dict(review_verification_summary),
+        )
+    )
+
+    release_image_verification_errors: list[str] = []
+    if release_image_verification_summary.get("report_status") not in {"passed", None}:
+        release_image_verification_errors.append("release image dependency verification report_status must be passed")
+    if release_image_verification_summary.get("error_count") not in {0, None}:
+        release_image_verification_errors.append("release image dependency verification summary has errors")
+    if release_image_verification_summary.get("failed_output_check_count") not in {0, None}:
+        release_image_verification_errors.append("release image dependency verification has failed output checks")
+    checks.append(
+        check_result(
+            "release_image_dependency_verification_summary",
+            release_image_verification_errors,
+            summary=dict(release_image_verification_summary),
+        )
+    )
+    return checks
+
+
+def validate_go_live_verification_readiness(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = artifact_by_name(payload)
+    production_env = artifacts.get("production_env_verification") or {}
+    production_env_summary = production_env.get("summary") if isinstance(production_env.get("summary"), dict) else {}
+    external_acceptance = artifacts.get("external_acceptance_verification") or {}
+    external_acceptance_summary = (
+        external_acceptance.get("summary") if isinstance(external_acceptance.get("summary"), dict) else {}
+    )
+    checks: list[dict[str, Any]] = []
+
+    production_env_errors: list[str] = []
+    if production_env_summary.get("report_status") not in {"passed", None}:
+        production_env_errors.append("production env verification report_status must be passed")
+    if production_env_summary.get("error_count") not in {0, None}:
+        production_env_errors.append("production env verification summary has errors")
+    if production_env_summary.get("rebuilt_report_match") is not True:
+        production_env_errors.append("production env verification must match the supplied env file")
+    checks.append(
+        check_result(
+            "production_env_verification_summary",
+            production_env_errors,
+            summary=dict(production_env_summary),
+        )
+    )
+
+    external_acceptance_errors: list[str] = []
+    if external_acceptance_summary.get("report_status") not in {"passed", None}:
+        external_acceptance_errors.append("external acceptance verification report_status must be passed")
+    if external_acceptance_summary.get("error_count") not in {0, None}:
+        external_acceptance_errors.append("external acceptance verification summary has errors")
+    if external_acceptance_summary.get("failed_evidence_check_count") not in {0, None}:
+        external_acceptance_errors.append("external acceptance verification has failed evidence checks")
+    checks.append(
+        check_result(
+            "external_acceptance_verification_summary",
+            external_acceptance_errors,
+            summary=dict(external_acceptance_summary),
+        )
+    )
     return checks
 
 
@@ -191,9 +302,7 @@ def validate_artifact_policy_contracts(payload: dict[str, Any]) -> list[dict[str
     checks: list[dict[str, Any]] = []
     for artifact_name, display_name in POLICY_CONTRACT_ARTIFACTS.items():
         artifact = artifacts.get(artifact_name)
-        summary = artifact_policy_summary(artifact)
-        policy_status = summary.get("policy_contract_status")
-        policy_failed_count = summary.get("policy_contract_failed_count")
+        summary = artifact_contract_summary(artifact)
         errors: list[str] = []
         if artifact is None:
             checks.append(check_result(f"{artifact_name}:policy_contract", errors, summary=dict(summary)))
@@ -203,24 +312,52 @@ def validate_artifact_policy_contracts(payload: dict[str, Any]) -> list[dict[str
             continue
         if not summary:
             errors.append(f"{display_name} policy contract summary is missing")
-        elif policy_status not in {"passed", "warning"}:
-            errors.append(f"{display_name} policy contract must be passed or warning, got {policy_status or '<missing>'}")
-        if policy_failed_count not in {0, None}:
-            errors.append(f"{display_name} policy contract has failed checks")
+        else:
+            errors.extend(contract_summary_errors(artifact_name, display_name, summary))
+            errors.extend(sensitive_scan_summary_errors(artifact_name, display_name, summary))
         checks.append(check_result(f"{artifact_name}:policy_contract", errors, summary=dict(summary)))
     return checks
 
 
-def artifact_policy_summary(artifact: dict[str, Any] | None) -> dict[str, Any]:
+def artifact_contract_summary(artifact: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(artifact, dict):
         return {}
     summary = artifact.get("summary")
     if not isinstance(summary, dict):
         return {}
+    manifest_evidence_summary = summary.get("manifest_evidence_summary")
+    if isinstance(manifest_evidence_summary, dict):
+        return dict(manifest_evidence_summary)
     evidence_summary = summary.get("evidence_summary")
     if isinstance(evidence_summary, dict):
         return dict(evidence_summary)
     return dict(summary)
+
+
+def contract_summary_errors(artifact_name: str, display_name: str, summary: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    for prefix in NESTED_CONTRACT_FIELDS.get(artifact_name, ()):
+        contract_label = "policy contract" if prefix == "policy_contract" else prefix
+        status = summary.get(f"{prefix}_status")
+        failed_count = summary.get(f"{prefix}_failed_count")
+        if status not in {"passed", "warning"}:
+            errors.append(f"{display_name} {contract_label} must be passed or warning, got {status or '<missing>'}")
+        if failed_count not in {0, None}:
+            errors.append(f"{display_name} {contract_label} has failed checks")
+    return errors
+
+
+def sensitive_scan_summary_errors(artifact_name: str, display_name: str, summary: dict[str, Any]) -> list[str]:
+    if not artifact_name.startswith("release_evidence_artifact:"):
+        return []
+    status = summary.get("sensitive_scan_status")
+    failed_count = summary.get("sensitive_scan_failed_count")
+    errors: list[str] = []
+    if status != "passed":
+        errors.append(f"{display_name} sensitive scan must be passed, got {status or '<missing>'}")
+    if failed_count not in {0, None}:
+        errors.append(f"{display_name} sensitive scan has failed findings")
+    return errors
 
 
 def attach_policy_contract(report: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +380,10 @@ def validate_go_live_readiness_policy_contract(report: dict[str, Any]) -> dict[s
     warnings = [str(warning) for warning in report.get("warnings") or []]
     required_artifact_names = list(REQUIRED_PASSED_ARTIFACTS)
     artifact_policy_check_names = [f"{name}:policy_contract" for name in POLICY_CONTRACT_ARTIFACTS]
+    go_live_verification_check_names = [
+        "production_env_verification_summary",
+        "external_acceptance_verification_summary",
+    ]
     policy_checks = [
         policy_check(
             code="schema.version",
@@ -299,6 +440,14 @@ def validate_go_live_readiness_policy_contract(report: dict[str, Any]) -> dict[s
             if aggregate_check_status(check_by_name, ["dependency_review_signoff"]) == "passed"
             else "dependency review signoff must cover review-required items",
             evidence=checks_status_evidence(check_by_name, ["dependency_review_signoff"]),
+        ),
+        policy_check(
+            code="go_live.verification_artifacts",
+            status=aggregate_check_status(check_by_name, go_live_verification_check_names),
+            message="production env and external acceptance verifications are passed and tied to their inputs"
+            if aggregate_check_status(check_by_name, go_live_verification_check_names) == "passed"
+            else "production env and external acceptance verifications must pass and match their inputs",
+            evidence=checks_status_evidence(check_by_name, go_live_verification_check_names),
         ),
         policy_check(
             code="blockers.clear",

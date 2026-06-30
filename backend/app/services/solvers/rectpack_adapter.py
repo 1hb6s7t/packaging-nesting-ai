@@ -10,7 +10,7 @@ from app.services.solvers.base import SolverAdapter
 
 class RectpackSolverAdapter(SolverAdapter):
     name = SolverName.rectpack
-    version = "mvp-shelf-0.1.0"
+    version = "shelf-0.2.0"
 
     def supports(self, job: NestingJob) -> bool:
         return bool(job.candidate_items)

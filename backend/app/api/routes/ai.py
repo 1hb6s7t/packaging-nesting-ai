@@ -11,7 +11,9 @@ router = APIRouter()
 
 
 @router.get("/tools", response_model=list[AiToolDefinition])
-def list_ai_tools() -> list[AiToolDefinition]:
+def list_ai_tools(
+    current_user: CurrentUser = Depends(require_permission("ai:use")),
+) -> list[AiToolDefinition]:
     return AI_TOOL_DEFINITIONS
 
 
@@ -48,7 +50,13 @@ def execute_tool(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name=payload.tool_name, arguments=payload.arguments, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name=payload.tool_name,
+        arguments=payload.arguments,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/search-orders", response_model=AiToolCallResult)
@@ -57,7 +65,13 @@ def search_orders(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="search_orders", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="search_orders",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/create-job", response_model=AiToolCallResult)
@@ -66,7 +80,13 @@ def create_job(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="create_nesting_job", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="create_nesting_job",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/run-solver", response_model=AiToolCallResult)
@@ -75,7 +95,13 @@ def run_solver(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="run_solver", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="run_solver",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/validate-solution", response_model=AiToolCallResult)
@@ -84,7 +110,13 @@ def validate_solution(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="validate_solution", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="validate_solution",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/compare-solutions", response_model=AiToolCallResult)
@@ -93,7 +125,13 @@ def compare_solutions(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="compare_solutions", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="compare_solutions",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/explain-unplaced-items", response_model=AiToolCallResult)
@@ -102,7 +140,13 @@ def explain_unplaced_items(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="explain_unplaced_items", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="explain_unplaced_items",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/generate-report", response_model=AiToolCallResult)
@@ -111,7 +155,13 @@ def generate_report(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="generate_report", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="generate_report",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/export-pdf", response_model=AiToolCallResult)
@@ -120,7 +170,13 @@ def export_pdf(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="export_pdf", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="export_pdf",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )
 
 
 @router.post("/tools/export-dxf", response_model=AiToolCallResult)
@@ -129,4 +185,10 @@ def export_dxf(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("ai:use")),
 ) -> AiToolCallResult:
-    return execute_ai_tool(db, tool_name="export_dxf", arguments=payload, actor_id=current_user.user_id)
+    return execute_ai_tool(
+        db,
+        tool_name="export_dxf",
+        arguments=payload,
+        actor_id=current_user.user_id,
+        actor_permissions=current_user.permissions,
+    )

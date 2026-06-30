@@ -93,7 +93,7 @@ def parse_vector_polygons(content: str, source_format: str, artwork_id: str) -> 
         return parse_svg_polygons(content, artwork_id)
     if source_format == "dxf":
         return parse_dxf_polygons(content, artwork_id)
-    raise ValueError(f"{source_format} is not directly parseable in MVP; convert to SVG/DXF first")
+    raise ValueError(f"{source_format} is not directly parseable; convert it to SVG/DXF before polygon extraction")
 
 
 def parse_svg_polygons(content: str, artwork_id: str) -> list[PolygonAsset]:

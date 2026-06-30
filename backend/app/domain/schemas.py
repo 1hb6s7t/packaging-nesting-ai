@@ -4,11 +4,12 @@ from datetime import date
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 Point = tuple[float, float]
 MessageChannel = Literal["in_app", "webhook", "email"]
+PlanningMode = Literal["single_sheet", "pattern", "expanded"]
 
 
 class SolverName(str, Enum):
@@ -297,12 +298,20 @@ class NestingJob(BaseModel):
     unit: str = "mm"
     sheet: SheetSpec
     fixed_items: list[NestingItem] = Field(default_factory=list)
-    candidate_items: list[NestingItem]
+    candidate_items: list[NestingItem] = Field(min_length=1)
     constraints: dict[str, Any] = Field(default_factory=dict)
     objective: Objective = Field(default_factory=Objective)
     time_limit_sec: int = Field(default=120, ge=1)
     top_k: int = Field(default=5, ge=1, le=20)
     solver_config: SolverConfig = Field(default_factory=SolverConfig)
+
+    @model_validator(mode="after")
+    def validate_unique_item_ids(self) -> "NestingJob":
+        item_ids = [item.item_id for item in [*self.fixed_items, *self.candidate_items]]
+        duplicates = sorted({item_id for item_id in item_ids if item_ids.count(item_id) > 1})
+        if duplicates:
+            raise ValueError(f"job item_id values must be unique: {', '.join(duplicates)}")
+        return self
 
 
 class Placement(BaseModel):
@@ -724,6 +733,13 @@ class AiToolDefinition(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]
+    schema_version: int = 1
+    required_permissions: list[str] = Field(default_factory=lambda: ["ai:use"])
+    read_only: bool = True
+    mutates: bool = False
+    reversible: bool = True
+    blocked_in_production: bool = False
+    requires_human_approval: bool = False
 
 
 class AiToolCallRequest(BaseModel):
@@ -1188,6 +1204,7 @@ class BenchmarkCase(BaseModel):
     name: str
     sheet: SheetSpec
     items: list[NestingItem]
+    planning_mode: PlanningMode = "single_sheet"
     baseline_utilization_rate: float | None = None
 
 
@@ -1201,9 +1218,24 @@ class BenchmarkRunResult(BaseModel):
     run_id: str | None = None
     case_id: str
     solver_name: str
+    planning_mode: PlanningMode = "single_sheet"
     utilization_rate: float
     waste_rate: float
     runtime_ms: int
     valid: bool
+    hard_rule_pass: bool = False
+    quantity_fulfillment_rate: float = 0
+    requested_units: int = 0
+    produced_units: int = 0
+    shortage_units: int = 0
+    overproduction_units: int = 0
+    units_per_sheet: int = 0
+    sheets_used: int = 0
+    peak_rss_mb: float | None = None
+    export_ok: bool = False
+    case_score: float = 0
+    baseline_delta_utilization_rate: float | None = None
+    p95_runtime_ms: int | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
     failure_reason: str | None = None
     created_at: str | None = None

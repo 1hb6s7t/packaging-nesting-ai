@@ -127,10 +127,17 @@ type ExceptionWritebackResult = {
 };
 
 const appStore = useAppStore();
+
+function templateId(prefix: string) {
+  return `${prefix}_${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`;
+}
+
+const templateJobId = templateId("job_template");
+
 const jobJson = ref(
   JSON.stringify(
     {
-      job_id: "job_demo",
+      job_id: templateJobId,
       sheet: {
         sheet_id: "sheet_889_1194",
         width: 889,

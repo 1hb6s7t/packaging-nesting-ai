@@ -13,11 +13,12 @@ from auth_helpers import auth_headers
 client = TestClient(app)
 
 
-def _benchmark_case(case_id: str) -> dict:
+def _benchmark_case(case_id: str, *, planning_mode: str = "single_sheet", quantity: int = 1) -> dict:
     suffix = case_id[-8:]
     return {
         "case_id": case_id,
         "name": f"Benchmark {suffix}",
+        "planning_mode": planning_mode,
         "sheet": {
             "sheet_id": f"BENCH_SHEET_{suffix}",
             "width": 500,
@@ -35,6 +36,7 @@ def _benchmark_case(case_id: str) -> dict:
                 "item_id": f"item_{suffix}",
                 "order_id": f"order_{suffix}",
                 "polygon": {"shape_id": f"shape_{suffix}", "outer": [[0, 0], [100, 0], [100, 80], [0, 80]]},
+                "quantity": quantity,
                 "priority_score": 0.9,
             }
         ],
@@ -64,7 +66,19 @@ def test_benchmark_cases_and_runs_are_persisted() -> None:
     assert run["run_id"].startswith("brun_")
     assert run["case_id"] == case_id
     assert run["solver_name"] == "RectpackSolver"
+    assert run["planning_mode"] == "single_sheet"
     assert run["valid"] is True
+    assert run["hard_rule_pass"] is True
+    assert run["requested_units"] == 1
+    assert run["produced_units"] == 1
+    assert run["shortage_units"] == 0
+    assert run["units_per_sheet"] == 1
+    assert run["sheets_used"] == 1
+    assert run["quantity_fulfillment_rate"] == 1
+    assert run["export_ok"] is True
+    assert run["case_score"] > 0
+    assert run["baseline_delta_utilization_rate"] is not None
+    assert run["metrics"]["solver_coordinates_source"] == "backend_solver"
 
     runs_response = client.get(f"/api/benchmark/runs?case_id={case_id}", headers=headers)
     assert runs_response.status_code == 200
@@ -97,10 +111,39 @@ def test_benchmark_case_can_run_as_background_task() -> None:
     assert task["result"]["case_id"] == case_id
     assert task["result"]["run_id"].startswith("brun_")
     assert task["result"]["valid"] is True
+    assert task["result"]["hard_rule_pass"] is True
+    assert task["result"]["quantity_fulfillment_rate"] == 1
 
     runs_response = client.get(f"/api/benchmark/runs?case_id={case_id}", headers=headers)
     assert runs_response.status_code == 200
     assert any(row["run_id"] == task["result"]["run_id"] for row in runs_response.json())
+
+
+def test_benchmark_pattern_case_records_quantity_metrics() -> None:
+    headers = auth_headers(client)
+    suffix = uuid4().hex[:8]
+    case_id = f"BENCH_PATTERN_{suffix}"
+    payload = _benchmark_case(case_id, planning_mode="pattern", quantity=100)
+
+    create_response = client.post("/api/benchmark/cases", headers=headers, json=payload)
+    assert create_response.status_code == 200
+    assert create_response.json()["planning_mode"] == "pattern"
+
+    run_response = client.post(f"/api/benchmark/cases/{case_id}/runs", headers=headers)
+    assert run_response.status_code == 200
+    run = run_response.json()
+    assert run["planning_mode"] == "pattern"
+    assert run["requested_units"] == 100
+    assert run["produced_units"] >= 100
+    assert run["shortage_units"] == 0
+    assert run["overproduction_units"] == run["produced_units"] - 100
+    assert run["units_per_sheet"] > 1
+    assert run["sheets_used"] > 1
+    assert run["quantity_fulfillment_rate"] == 1
+    assert run["hard_rule_pass"] is True
+    assert run["export_ok"] is True
+    assert run["p95_runtime_ms"] is not None
+    assert run["metrics"]["requested_units_by_item"][f"item_{suffix}"] == 100
 
 
 def test_cancelled_benchmark_task_does_not_write_run(monkeypatch) -> None:
@@ -119,16 +162,15 @@ def test_cancelled_benchmark_task_does_not_write_run(monkeypatch) -> None:
             timeout_sec=30,
         )
 
-    original_orchestrator = benchmarks.SolverOrchestrator
+    original_plan_batch = benchmarks.plan_batch
 
-    class CancellingOrchestrator:
-        def solve(self, job):
-            solutions = original_orchestrator().solve(job)
-            with SessionLocal() as db:
-                repository.request_cancel_work_task(db, task.id, actor_id="test")
-            return solutions
+    def cancelling_plan_batch(*args, **kwargs):
+        result = original_plan_batch(*args, **kwargs)
+        with SessionLocal() as db:
+            repository.request_cancel_work_task(db, task.id, actor_id="test")
+        return result
 
-    monkeypatch.setattr(benchmarks, "SolverOrchestrator", CancellingOrchestrator)
+    monkeypatch.setattr(benchmarks, "plan_batch", cancelling_plan_batch)
 
     result = execute_work_task(task.id)
 

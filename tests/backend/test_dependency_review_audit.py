@@ -58,6 +58,7 @@ def test_dependency_review_audit_accepts_current_approved_acknowledgements(tmp_p
     assert report["status"] == "passed"
     assert report["summary"]["review_required_count"] == 1
     assert report["summary"]["approved_count"] == 1
+    assert report["options"]["require_review_file"] is True
     assert report["policy_contract"]["status"] == "passed"
     assert report["policy_contract"]["failed_count"] == 0
     assert report["summary"]["policy_contract_status"] == "passed"
@@ -75,11 +76,13 @@ def test_dependency_review_audit_can_skip_or_fail_when_review_file_is_missing() 
     )
 
     assert skipped["status"] == "skipped"
+    assert skipped["options"]["require_review_file"] is False
     assert skipped["summary"]["missing_ack_count"] == 1
     assert skipped["policy_contract"]["status"] == "skipped"
     assert skipped["summary"]["policy_contract_status"] == "skipped"
     assert "dependency review file was not provided" in skipped["warnings"]
     assert failed["status"] == "failed"
+    assert failed["options"]["require_review_file"] is True
     assert "dependency review file is required" in failed["errors"][0]
     assert failed["policy_contract"]["status"] == "failed"
     assert any(check["code"] == "review.file.present" for check in failed["policy_contract"]["failed_checks"])
