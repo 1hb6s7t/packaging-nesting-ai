@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.domain.schemas import BatchArtworkSummary, CurrentUser
+from app.domain.schemas import BatchArtworkRetryRequest, BatchArtworkSummary, CurrentUser
 from app.services import repository
 from app.services.artworks import checksum_bytes, new_artwork_id, preflight_artwork, save_artwork_bytes
 from app.services.batch_artworks import BatchArtworkService
@@ -123,6 +123,32 @@ def parse_batch_artworks(
         target_id=batch_id,
         actor_id=current_user.user_id,
         payload={
+            "status_counts": summary.status_counts,
+            "class_counts": summary.class_counts,
+        },
+    )
+    return summary
+
+
+@router.post("/{batch_id}/retry-failed", response_model=BatchArtworkSummary)
+def retry_failed_batch_artworks(
+    batch_id: str,
+    request: BatchArtworkRetryRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("batch:write")),
+) -> BatchArtworkSummary:
+    try:
+        summary = service.retry_failed_items(db, batch_id, item_ids=request.item_ids if request else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    repository.log_operation(
+        db,
+        action="batch_artwork.retry_failed",
+        target_type="batch_upload",
+        target_id=batch_id,
+        actor_id=current_user.user_id,
+        payload={
+            "item_ids": request.item_ids if request else None,
             "status_counts": summary.status_counts,
             "class_counts": summary.class_counts,
         },

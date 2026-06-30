@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -45,11 +46,17 @@ import sys
 
 payload = json.loads(sys.stdin.read())
 item = payload["items"][0]
+print("fake solver stderr evidence", file=sys.stderr)
 print(json.dumps({
     "solution_id": "external_sol",
     "status": "candidate",
     "utilization_rate": 0.25,
     "waste_rate": 0.75,
+    "certificate": {
+        "engine": "fake-external-cli",
+        "solver": payload["solver"],
+        "item_count": len(payload["items"])
+    },
     "placed_items": [{
         "item_id": item["item_id"],
         "order_id": item["order_id"],
@@ -74,6 +81,18 @@ print(json.dumps({
     assert solution.validation_report.is_valid is True
     assert len(solution.placed_items) == 1
     assert solution.placed_items[0].item_id == "box_a"
+    assert "external_sol" in solution.exports["stdout"]
+    assert "fake solver stderr evidence" in solution.exports["stderr"]
+    assert solution.exports["exit_code"] == "0"
+    assert len(solution.exports["input_payload_sha256"]) == 64
+    cli_result = json.loads(solution.exports["cli_result_json"])
+    assert cli_result["status"] == "passed"
+    assert cli_result["exit_code"] == 0
+    assert cli_result["command"][1] == str(cli_script)
+    assert json.loads(solution.exports["command_json"])[1] == str(cli_script)
+    certificate = json.loads(solution.exports["external_certificate_json"])
+    assert certificate["source"] == "external_solver_certificate"
+    assert certificate["certificate"]["engine"] == "fake-external-cli"
 
 
 @pytest.mark.parametrize("solver_name", [SolverName.packing_solver, SolverName.sparrow])
@@ -88,6 +107,29 @@ def test_external_cli_adapter_invalid_json_stays_failed(tmp_path: Path, solver_n
     assert solution.placed_items == []
     assert solution.unplaced_items[0].item_id == "box_a"
     assert "invalid JSON" in solution.unplaced_items[0].reason
+    assert "not-json" in solution.exports["stdout"]
+    assert solution.exports["cli_status"] == "passed"
+    assert solution.exports["exit_code"] == "0"
+    assert len(solution.exports["input_payload_sha256"]) == 64
+    assert json.loads(solution.exports["cli_result_json"])["status"] == "passed"
+    assert "invalid JSON" in solution.exports["error_message"]
+    certificate = json.loads(solution.exports["certificate_json"])
+    assert certificate["source"] == "external_solver_failure"
+    assert certificate["status"] == "passed"
+
+
+@pytest.mark.parametrize("solver_name", [SolverName.packing_solver, SolverName.sparrow])
+def test_external_cli_adapter_missing_configuration_keeps_audit_evidence(solver_name: SolverName) -> None:
+    solution = SolverOrchestrator().solve(_job(solver_name))[0]
+
+    assert solution.status == "failed"
+    assert solution.exports["cli_status"] == "not_configured"
+    assert solution.exports["command_json"] == "[]"
+    assert json.loads(solution.exports["cli_result_json"])["status"] == "not_configured"
+    assert solver_name.value in solution.exports["error_message"]
+    certificate = json.loads(solution.exports["certificate_json"])
+    assert certificate["source"] == "external_solver_failure"
+    assert certificate["status"] == "not_configured"
 
 
 @pytest.mark.parametrize("solver_name", [SolverName.packing_solver, SolverName.sparrow])

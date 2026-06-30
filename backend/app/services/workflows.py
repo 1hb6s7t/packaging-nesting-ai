@@ -84,11 +84,32 @@ def run_nesting_job(
     store.job_solutions[job_id] = ids
     repository.save_solutions(db, job_id, solutions, solver_run_id=run_id)
     runtime_ms = int((time.perf_counter() - started_at) * 1000)
+    evidence_payloads = []
+    for solution in solutions:
+        evidence = _solution_attempt_evidence(
+            job,
+            solution,
+            attempt_config={
+                "solver_name": solver_name,
+                "solver_version": solver_version,
+                "seed": job.solver_config.seed,
+                "time_limit_sec": job.solver_config.time_limit_sec,
+                "candidate_pool_enabled": False,
+                "base_solver_config": job.solver_config.model_dump(mode="json"),
+            },
+        )
+        repository.add_solver_run_log(db, run_id, "info", "solver attempt evidence", evidence)
+        evidence_payloads.append(evidence)
     repository.complete_solver_run(
         db,
         run_id,
         runtime_ms,
-        {"job_id": job_id, "solution_ids": ids, "solution_count": len(solutions)},
+        {
+            "job_id": job_id,
+            "solution_ids": ids,
+            "solution_count": len(solutions),
+            "attempt_evidence": evidence_payloads,
+        },
     )
     repository.log_operation(
         db,
@@ -178,23 +199,7 @@ def _persist_solver_attempt_run(db: Session, job, solution: NestingSolution) -> 
         "candidate_pool_enabled": True,
         "base_solver_config": job.solver_config.model_dump(mode="json"),
     }
-    input_snapshot = job.model_dump(mode="json")
-    input_payload = json.dumps(input_snapshot, sort_keys=True, ensure_ascii=False)
-    evidence = {
-        "solution_id": solution.solution_id,
-        "candidate_id": attempt_config["candidate_id"],
-        "rank": solution.rank,
-        "status": solution.status,
-        "input_hash": hashlib.sha256(input_payload.encode("utf-8")).hexdigest(),
-        "input_snapshot": input_snapshot,
-        "attempt_config": attempt_config,
-        "stdout": solution.exports.get("stdout", ""),
-        "stderr": solution.exports.get("stderr", ""),
-        "certificate": _json_dict(solution.exports.get("certificate_json")),
-        "validator_report": solution.validation_report.model_dump(mode="json") if solution.validation_report else None,
-        "score": solution.score.model_dump(mode="json") if solution.score else None,
-        "audit_manifest": manifest,
-    }
+    evidence = _solution_attempt_evidence(job, solution, attempt_config=attempt_config, audit_manifest=manifest)
     run_id = repository.create_solver_run(
         db,
         job_id=job.job_id,
@@ -213,6 +218,41 @@ def _persist_solver_attempt_run(db: Session, job, solution: NestingSolution) -> 
         repository.complete_solver_run(db, run_id, solution.runtime_ms, evidence)
     solution.exports["solver_run_id"] = run_id
     return run_id
+
+
+def _solution_attempt_evidence(
+    job,
+    solution: NestingSolution,
+    *,
+    attempt_config: dict[str, Any],
+    audit_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    input_snapshot = job.model_dump(mode="json")
+    input_payload = json.dumps(input_snapshot, sort_keys=True, ensure_ascii=False)
+    return {
+        "solution_id": solution.solution_id,
+        "candidate_id": attempt_config.get("candidate_id", solution.solution_id),
+        "rank": solution.rank,
+        "status": solution.status,
+        "input_hash": hashlib.sha256(input_payload.encode("utf-8")).hexdigest(),
+        "input_payload_sha256": solution.exports.get("input_payload_sha256", ""),
+        "input_snapshot": input_snapshot,
+        "attempt_config": attempt_config,
+        "command": _json_list(solution.exports.get("command_json")),
+        "cli_result": _json_dict(solution.exports.get("cli_result_json")),
+        "cli_status": solution.exports.get("cli_status", ""),
+        "exit_code": solution.exports.get("exit_code", ""),
+        "error_message": solution.exports.get("error_message", ""),
+        "stdout": solution.exports.get("stdout", ""),
+        "stderr": solution.exports.get("stderr", ""),
+        "stdout_sha256": solution.exports.get("stdout_sha256", ""),
+        "stderr_sha256": solution.exports.get("stderr_sha256", ""),
+        "certificate": _json_dict(solution.exports.get("certificate_json")),
+        "external_certificate": _json_dict(solution.exports.get("external_certificate_json")),
+        "validator_report": solution.validation_report.model_dump(mode="json") if solution.validation_report else None,
+        "score": solution.score.model_dump(mode="json") if solution.score else None,
+        "audit_manifest": audit_manifest or _json_dict(solution.exports.get("audit_manifest_json")),
+    }
 
 
 def _candidate_pool_enabled(options: dict[str, Any]) -> bool:
@@ -294,6 +334,16 @@ def _json_dict(value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _json_list(value: str | None) -> list[Any]:
+    if not value:
+        return []
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return payload if isinstance(payload, list) else []
 
 
 def _failure_reason(solution: NestingSolution) -> str:

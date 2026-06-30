@@ -174,38 +174,64 @@ class BatchArtworkService:
         _require_batch(db, batch_id)
         parent = schemas.SheetParentSpec()
         for row in _batch_item_rows(db, batch_id):
-            report = _preflight_from_row(row)
-            if row.source_format in {"svg", "dxf"}:
-                try:
-                    content = repository.load_artwork_content(db, row.artwork_file_id or "")
-                    if content is None:
-                        raise ValueError("original artwork content is missing from storage")
-                    polygons = parse_vector_polygons(content, row.source_format, row.artwork_file_id or row.id)
-                    repository.save_polygons(db, row.artwork_file_id or row.id, polygons)
-                    feature = self.extractor.extract(polygons, preflight_report=report)
-                    row.feature_json = feature.model_dump(mode="json")
-                    row.classification = self.classifier.classify(
-                        feature,
-                        parent=parent,
-                        source_format=row.source_format,
-                    )
-                    row.status = "parsed"
-                    row.parse_error = None
-                except Exception as exc:
-                    feature = self.extractor.extract([], preflight_report=report)
-                    row.feature_json = feature.model_dump(mode="json")
-                    row.classification = self.classifier.classify(feature, parent=parent, source_format=row.source_format)
-                    row.status = "failed"
-                    row.parse_error = str(exc)
-            else:
-                feature = self.extractor.extract([], preflight_report=report)
-                row.feature_json = feature.model_dump(mode="json")
-                row.classification = self.classifier.classify(feature, parent=parent, source_format=row.source_format)
-                row.status = "manual_review" if report.requires_manual_review else "conversion_required"
-                row.parse_error = "Direct geometry parsing supports SVG/DXF; conversion is required before coordinates."
+            self.parse_item_row(db, row, parent=parent)
         db.commit()
         self.refresh_batch_counts(db, batch_id)
         return self.summary(db, batch_id)
+
+    def retry_failed_items(
+        self,
+        db: Session,
+        batch_id: str,
+        *,
+        item_ids: list[str] | None = None,
+    ) -> schemas.BatchArtworkSummary:
+        _require_batch(db, batch_id)
+        selected_ids = set(item_ids or [])
+        parent = schemas.SheetParentSpec()
+        for row in _batch_item_rows(db, batch_id):
+            if row.status != "failed":
+                continue
+            if selected_ids and row.id not in selected_ids:
+                continue
+            row.retry_count += 1
+            row.parse_error = None
+            self.parse_item_row(db, row, parent=parent)
+        db.commit()
+        self.refresh_batch_counts(db, batch_id)
+        return self.summary(db, batch_id)
+
+    def parse_item_row(self, db: Session, row: dbm.BatchArtworkItem, *, parent: schemas.SheetParentSpec) -> None:
+        report = _preflight_from_row(row)
+        if row.source_format in {"svg", "dxf"}:
+            try:
+                content = repository.load_artwork_content(db, row.artwork_file_id or "")
+                if content is None:
+                    raise ValueError("original artwork content is missing from storage")
+                polygons = parse_vector_polygons(content, row.source_format, row.artwork_file_id or row.id)
+                repository.save_polygons(db, row.artwork_file_id or row.id, polygons)
+                feature = self.extractor.extract(polygons, preflight_report=report)
+                row.feature_json = feature.model_dump(mode="json")
+                row.classification = self.classifier.classify(
+                    feature,
+                    parent=parent,
+                    source_format=row.source_format,
+                )
+                row.status = "parsed"
+                row.parse_error = None
+            except Exception as exc:
+                feature = self.extractor.extract([], preflight_report=report)
+                row.feature_json = feature.model_dump(mode="json")
+                row.classification = self.classifier.classify(feature, parent=parent, source_format=row.source_format)
+                row.status = "failed"
+                row.parse_error = str(exc)
+            return
+
+        feature = self.extractor.extract([], preflight_report=report)
+        row.feature_json = feature.model_dump(mode="json")
+        row.classification = self.classifier.classify(feature, parent=parent, source_format=row.source_format)
+        row.status = "manual_review" if report.requires_manual_review else "conversion_required"
+        row.parse_error = "Direct geometry parsing supports SVG/DXF; conversion is required before coordinates."
 
     def summary(self, db: Session, batch_id: str) -> schemas.BatchArtworkSummary:
         batch = _require_batch(db, batch_id)

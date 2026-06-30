@@ -53,6 +53,13 @@ def test_solver_run_and_operation_log_are_persisted() -> None:
     messages = [item["message"] for item in logs.json()]
     assert "solver run started" in messages
     assert "solver run completed" in messages
+    evidence = next(item["payload"] for item in logs.json() if item["message"] == "solver attempt evidence")
+    assert evidence["input_hash"]
+    assert evidence["input_snapshot"]["job_id"] == job_id
+    assert evidence["attempt_config"]["candidate_pool_enabled"] is False
+    assert evidence["validator_report"]["is_valid"] is True
+    assert "command" in evidence
+    assert "cli_result" in evidence
 
     op_logs = client.get("/api/operation-logs", headers=headers)
     assert op_logs.status_code == 200
@@ -139,3 +146,15 @@ def test_candidate_pool_solver_attempts_are_persisted_with_replay_evidence() -> 
     assert evidence["validator_report"]["is_valid"] is True
     assert "stdout" in evidence
     assert "stderr" in evidence
+
+    packing_run_id = next(run["id"] for run in run_payload if run["solver_name"] == "PackingSolver")
+    packing_logs = client.get(f"/api/nesting/runs/{packing_run_id}/logs", headers=headers)
+    assert packing_logs.status_code == 200
+    packing_evidence = next(
+        item["payload"] for item in packing_logs.json() if item["message"] == "solver attempt evidence"
+    )
+    assert packing_evidence["cli_status"] == "not_configured"
+    assert packing_evidence["command"] == []
+    assert packing_evidence["cli_result"]["status"] == "not_configured"
+    assert packing_evidence["external_certificate"]["source"] == "external_solver_failure"
+    assert packing_evidence["certificate"]["external_solver_certificate"]["status"] == "not_configured"

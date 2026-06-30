@@ -166,6 +166,7 @@ class MultiSolverOrchestrator:
 
     def _solution_audit(self, spec: SolverRunSpec, solution: NestingSolution) -> dict[str, str]:
         report = solution.validation_report
+        external_certificate = _loads(solution.exports.get("external_certificate_json"))
         certificate = {
             "candidate_id": spec.candidate_id,
             "solution_id": solution.solution_id,
@@ -174,6 +175,8 @@ class MultiSolverOrchestrator:
             "unplaced_items": [unplaced.model_dump(mode="json") for unplaced in solution.unplaced_items],
             "validation_report": report.model_dump(mode="json") if report else None,
         }
+        if external_certificate:
+            certificate["external_solver_certificate"] = external_certificate
         manifest = {
             "candidate_id": spec.candidate_id,
             "solver_name": spec.solver_name.value,
@@ -188,6 +191,10 @@ class MultiSolverOrchestrator:
             "score_total": solution.score.total if solution.score else 0,
             "stdout_present": bool(solution.exports.get("stdout")),
             "stderr_present": bool(solution.exports.get("stderr")),
+            "command_present": bool(solution.exports.get("command_json")),
+            "cli_status": solution.exports.get("cli_status", ""),
+            "exit_code": solution.exports.get("exit_code", ""),
+            "external_certificate_present": bool(external_certificate),
             "certificate_present": True,
         }
         return {
@@ -201,6 +208,15 @@ class MultiSolverOrchestrator:
             "certificate_json": json.dumps(certificate, sort_keys=True),
             "stdout": solution.exports.get("stdout", ""),
             "stderr": solution.exports.get("stderr", ""),
+            "stdout_sha256": solution.exports.get("stdout_sha256", ""),
+            "stderr_sha256": solution.exports.get("stderr_sha256", ""),
+            "input_payload_sha256": solution.exports.get("input_payload_sha256", ""),
+            "command_json": solution.exports.get("command_json", "[]"),
+            "cli_result_json": solution.exports.get("cli_result_json", "{}"),
+            "cli_status": solution.exports.get("cli_status", ""),
+            "exit_code": solution.exports.get("exit_code", ""),
+            "error_message": solution.exports.get("error_message", ""),
+            "external_certificate_json": solution.exports.get("external_certificate_json", ""),
         }
 
 

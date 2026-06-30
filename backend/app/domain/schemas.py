@@ -214,6 +214,10 @@ class BatchArtworkSummary(BaseModel):
     status_counts: dict[str, int] = Field(default_factory=dict)
 
 
+class BatchArtworkRetryRequest(BaseModel):
+    item_ids: list[str] | None = None
+
+
 class SheetParentSpec(BaseModel):
     parent_id: str = "PARENT_787_1092"
     name: str = "787x1092 parent sheet"
