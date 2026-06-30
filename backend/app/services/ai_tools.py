@@ -4,8 +4,11 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
+from app.domain import schemas
 from app.domain.schemas import AiToolCallResult, AiToolDefinition, NestingSolution
 from app.services import repository
+from app.services.batch_artworks import BatchArtworkService
+from app.services.batch_layout import BatchLayoutService
 from app.services.reports import generate_solution_report
 from app.services.store import store
 from app.services.validator import validate_solution as run_validation
@@ -90,6 +93,63 @@ AI_TOOL_DEFINITIONS = [
         parameters={"type": "object", "required": ["solution_id"], "properties": {"solution_id": {"type": "string"}}},
     ),
     AiToolDefinition(
+        name="get_batch_summary",
+        description="Fetch deterministic batch artwork status, format, and class summary.",
+        parameters={"type": "object", "required": ["batch_id"], "properties": {"batch_id": {"type": "string"}}},
+    ),
+    AiToolDefinition(
+        name="get_batch_features",
+        description="List parsed batch artwork features and classifications without generating coordinates.",
+        parameters={
+            "type": "object",
+            "required": ["batch_id"],
+            "properties": {
+                "batch_id": {"type": "string"},
+                "classification": {"type": "string"},
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+        },
+    ),
+    AiToolDefinition(
+        name="create_batch_layout_job",
+        description="Create a batch layout job from a stored batch using deterministic backend defaults.",
+        parameters={
+            "type": "object",
+            "required": ["batch_id"],
+            "properties": {
+                "batch_id": {"type": "string"},
+                "moq_per_item": {"type": "integer", "minimum": 1},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+                "sheet_parent": {"type": "object"},
+                "params": {"type": "object"},
+            },
+        },
+        required_permissions=["ai:use", "batch:write"],
+        read_only=False,
+        mutates=True,
+        reversible=True,
+    ),
+    AiToolDefinition(
+        name="run_batch_layout_job",
+        description="Run an existing batch layout job through backend grouping, pattern, Validator, and Top3 services.",
+        parameters={"type": "object", "required": ["job_id"], "properties": {"job_id": {"type": "string"}}},
+        required_permissions=["ai:use", "batch:write"],
+        read_only=False,
+        mutates=True,
+        reversible=True,
+    ),
+    AiToolDefinition(
+        name="compare_batch_top3",
+        description="Compare stored Top3 production plans for a batch layout job using backend metrics only.",
+        parameters={"type": "object", "required": ["job_id"], "properties": {"job_id": {"type": "string"}}},
+    ),
+    AiToolDefinition(
+        name="generate_batch_report",
+        description="Generate a batch layout report from stored batch, group, and production plan data.",
+        parameters={"type": "object", "required": ["job_id"], "properties": {"job_id": {"type": "string"}}},
+    ),
+    AiToolDefinition(
         name="export_pdf",
         description="Export an approved and validated solution to PDF.",
         parameters={"type": "object", "required": ["solution_id"], "properties": {"solution_id": {"type": "string"}}},
@@ -122,6 +182,8 @@ AI_TOOL_DEFINITIONS = [
 ]
 
 AI_TOOL_MAP = {tool.name: tool for tool in AI_TOOL_DEFINITIONS}
+batch_artwork_service = BatchArtworkService()
+batch_layout_service = BatchLayoutService()
 
 BASE_SAFETY = {
     "mode": "controlled_tool_execution",
@@ -183,11 +245,19 @@ def plan_ai_tool_calls(message: str) -> list[dict[str, Any]]:
     if any(token in text for token in ("solver", "solve", "run", "求解", "排版", "拼版")):
         planned.append({"tool_name": "run_solver", "arguments": {"job_id": "<nesting_job_id>"}})
     if any(token in text for token in ("compare", "对比", "比较")):
-        planned.append({"tool_name": "compare_solutions", "arguments": {"job_id": "<nesting_job_id>"}})
+        if any(batch_token in text for batch_token in ("batch", "top3", "批量", "生产方案")):
+            planned.append({"tool_name": "compare_batch_top3", "arguments": {"job_id": "<batch_layout_job_id>"}})
+        else:
+            planned.append({"tool_name": "compare_solutions", "arguments": {"job_id": "<nesting_job_id>"}})
     if any(token in text for token in ("unplaced", "未放", "未排", "原因")):
         planned.append({"tool_name": "explain_unplaced_items", "arguments": {"solution_id": "<solution_id>"}})
     if any(token in text for token in ("report", "报告", "成本", "利用率")):
-        planned.append({"tool_name": "generate_report", "arguments": {"solution_id": "<solution_id>"}})
+        if any(batch_token in text for batch_token in ("batch", "批量", "top3", "生产方案")):
+            planned.append({"tool_name": "generate_batch_report", "arguments": {"job_id": "<batch_layout_job_id>"}})
+        else:
+            planned.append({"tool_name": "generate_report", "arguments": {"solution_id": "<solution_id>"}})
+    if any(token in text for token in ("batch", "批量", "features", "特征", "分类")):
+        planned.append({"tool_name": "get_batch_summary", "arguments": {"batch_id": "<batch_id>"}})
     if not planned:
         planned.append({"tool_name": "search_orders", "arguments": {"query": message}})
     return planned
@@ -346,6 +416,166 @@ def _execute_generate_report(db: Session, args: dict[str, Any], actor_id: str | 
     )
 
 
+def _execute_get_batch_summary(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
+    batch_id = _require_string(args, "batch_id")
+    summary = batch_artwork_service.summary(db, batch_id)
+    return _completed(
+        "get_batch_summary",
+        {
+            "batch": summary.batch.model_dump(mode="json"),
+            "class_counts": summary.class_counts,
+            "format_counts": summary.format_counts,
+            "status_counts": summary.status_counts,
+            "item_count": len(summary.items),
+        },
+        f"loaded batch summary for {len(summary.items)} artwork item(s)",
+        {"read_only": True, "coordinates_source": "stored_features_only"},
+    )
+
+
+def _execute_get_batch_features(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
+    batch_id = _require_string(args, "batch_id")
+    classification = str(args.get("classification") or "").strip()
+    status = str(args.get("status") or "").strip()
+    limit = _bounded_limit(args.get("limit"), default=100, max_value=500)
+    summary = batch_artwork_service.summary(db, batch_id)
+    rows = []
+    for item in summary.items:
+        if classification and item.classification != classification:
+            continue
+        if status and item.status != status:
+            continue
+        rows.append(
+            {
+                "item_id": item.item_id,
+                "artwork_id": item.artwork_id,
+                "filename": item.filename,
+                "source_format": item.source_format,
+                "status": item.status,
+                "classification": item.classification,
+                "quantity": item.quantity,
+                "retry_count": item.retry_count,
+                "parse_error": item.parse_error,
+                "feature": _batch_feature_summary(item.feature),
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return _completed(
+        "get_batch_features",
+        {"batch_id": batch_id, "count": len(rows), "items": rows},
+        f"loaded {len(rows)} batch feature row(s)",
+        {"read_only": True, "coordinates_source": "stored_features_only"},
+    )
+
+
+def _execute_create_batch_layout_job(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
+    batch_id = _require_string(args, "batch_id")
+    payload = schemas.BatchLayoutJobCreate(
+        batch_id=batch_id,
+        sheet_parent=schemas.SheetParentSpec.model_validate(args.get("sheet_parent") or {}),
+        moq_per_item=max(1, int(args.get("moq_per_item") or 1000)),
+        top_k=max(1, min(int(args.get("top_k") or 3), 10)),
+        params=args.get("params") if isinstance(args.get("params"), dict) else {},
+    )
+    job = batch_layout_service.create_job(db, payload)
+    repository.log_operation(
+        db,
+        action="batch_layout.job.create",
+        target_type="batch_layout_job",
+        target_id=job.job_id,
+        actor_id=actor_id,
+        payload={"source": "ai_tool", "batch_id": job.batch_id, "top_k": job.top_k, "moq_per_item": job.moq_per_item},
+    )
+    return _completed(
+        "create_batch_layout_job",
+        {"job": job.model_dump(mode="json")},
+        "batch layout job created by controlled backend service",
+        {
+            "mutates": True,
+            "coordinates_source": "none_job_contract_only",
+            "requires_validator_for_export": True,
+        },
+    )
+
+
+def _execute_run_batch_layout_job(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
+    job_id = _require_string(args, "job_id")
+    result = batch_layout_service.run_job(db, job_id)
+    repository.log_operation(
+        db,
+        action="batch_layout.job.run",
+        target_type="batch_layout_job",
+        target_id=job_id,
+        actor_id=actor_id,
+        payload={**result.summary, "source": "ai_tool"},
+    )
+    return _completed(
+        "run_batch_layout_job",
+        {
+            "job": result.job.model_dump(mode="json"),
+            "summary": result.summary,
+            "groups": [group.model_dump(mode="json") for group in result.groups],
+            "plans": [_production_plan_summary(plan) for plan in result.plans],
+        },
+        f"batch layout completed with {len(result.plans)} production plan(s)",
+        {
+            "mutates": True,
+            "coordinates_source": "backend_batch_layout_services",
+            "requires_validator_for_export": True,
+            "production_export_allowed": False,
+        },
+    )
+
+
+def _execute_compare_batch_top3(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
+    job_id = _require_string(args, "job_id")
+    job = batch_layout_service.get_job(db, job_id)
+    if job is None:
+        raise ValueError("batch layout job not found")
+    plans = batch_layout_service.list_plans(db, job_id)
+    return _completed(
+        "compare_batch_top3",
+        {"job_id": job_id, "plan_count": len(plans), "plans": [_production_plan_summary(plan) for plan in plans]},
+        f"compared {len(plans)} production plan(s)",
+        {"read_only": True, "metrics_source": "stored_batch_production_plans"},
+    )
+
+
+def _execute_generate_batch_report(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
+    job_id = _require_string(args, "job_id")
+    job = batch_layout_service.get_job(db, job_id)
+    if job is None:
+        raise ValueError("batch layout job not found")
+    groups = batch_layout_service.list_groups(db, job_id)
+    plans = batch_layout_service.list_plans(db, job_id)
+    summary = batch_artwork_service.summary(db, job.batch_id)
+    legal_plans = [plan for plan in plans if plan.hard_rule_pass and plan.quantity_fulfillment_rate >= 1]
+    report = {
+        "job": job.model_dump(mode="json"),
+        "batch": summary.batch.model_dump(mode="json"),
+        "status_counts": summary.status_counts,
+        "class_counts": summary.class_counts,
+        "group_count": len(groups),
+        "plan_count": len(plans),
+        "legal_plan_count": len(legal_plans),
+        "top_plan": _production_plan_summary(plans[0]) if plans else None,
+        "plans": [_production_plan_summary(plan) for plan in plans],
+        "blocked_reasons": _batch_report_blockers(summary, plans),
+        "safety": {
+            "coordinates_source": "stored_backend_plan_metrics_not_ai_generated",
+            "production_export_allowed": False,
+            "requires_approval_before_export": True,
+        },
+    }
+    return _completed(
+        "generate_batch_report",
+        {"report": report},
+        "batch report generated from stored backend batch and production plan data",
+        {"read_only": True, "report_source": "stored_batch_layout_data"},
+    )
+
+
 def _execute_blocked_production_action(db: Session, args: dict[str, Any], actor_id: str | None) -> AiToolCallResult:
     tool_name = str(args.get("_tool_name") or "unknown")
     messages = {
@@ -398,12 +628,12 @@ def _require_string(args: dict[str, Any], key: str) -> str:
     return value
 
 
-def _bounded_limit(value: Any, *, default: int) -> int:
+def _bounded_limit(value: Any, *, default: int, max_value: int = 100) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = default
-    return max(1, min(parsed, 100))
+    return max(1, min(parsed, max_value))
 
 
 def _order_search_text(order: Any) -> str:
@@ -437,6 +667,64 @@ def _solution_summary(solution: NestingSolution) -> dict[str, Any]:
         "score_total": solution.score.total if solution.score else None,
         "validation_valid": solution.validation_report.is_valid if solution.validation_report else None,
     }
+
+
+def _production_plan_summary(plan: schemas.ProductionPlanRead) -> dict[str, Any]:
+    veto = plan.validator_report.get("veto") if isinstance(plan.validator_report, dict) else {}
+    return {
+        "plan_id": plan.plan_id,
+        "job_id": plan.job_id,
+        "rank": plan.rank,
+        "intent": plan.intent,
+        "status": plan.status,
+        "utilization_rate": plan.utilization_rate,
+        "risk_score": plan.risk_score,
+        "runtime_score": plan.runtime_score,
+        "diversity_score": plan.diversity_score,
+        "total_sheets_used": plan.total_sheets_used,
+        "quantity_fulfillment_rate": plan.quantity_fulfillment_rate,
+        "hard_rule_pass": plan.hard_rule_pass,
+        "export_ok": plan.export_ok,
+        "pattern_count": len(plan.patterns),
+        "veto": veto if isinstance(veto, dict) else {},
+        "coordinates_source": plan.audit_manifest.get("coordinates_source", "not_generated_by_ai"),
+    }
+
+
+def _batch_feature_summary(feature: schemas.ArtworkFeature | None) -> dict[str, Any] | None:
+    if feature is None:
+        return None
+    bbox = feature.bbox
+    return {
+        "bbox_width": bbox.width if bbox else None,
+        "bbox_height": bbox.height if bbox else None,
+        "area": feature.area,
+        "area_ratio": feature.area_ratio,
+        "aspect_ratio": feature.aspect_ratio,
+        "hole_count": feature.hole_count,
+        "concavity": feature.concavity,
+        "parse_confidence": feature.parse_confidence,
+        "needs_manual_review": feature.needs_manual_review,
+        "warnings": feature.warnings,
+        "metadata": feature.metadata,
+    }
+
+
+def _batch_report_blockers(summary: schemas.BatchArtworkSummary, plans: list[schemas.ProductionPlanRead]) -> list[str]:
+    blockers: list[str] = []
+    if summary.batch.failed_count:
+        blockers.append(f"{summary.batch.failed_count} artwork item(s) failed parsing")
+    if summary.batch.conversion_required_count:
+        blockers.append(f"{summary.batch.conversion_required_count} artwork item(s) require conversion")
+    if summary.batch.manual_review_count:
+        blockers.append(f"{summary.batch.manual_review_count} artwork item(s) require manual review")
+    if not plans:
+        blockers.append("no production plans are available")
+    if plans and not any(plan.hard_rule_pass for plan in plans):
+        blockers.append("no production plan passes hard rules")
+    if plans and min(plan.quantity_fulfillment_rate for plan in plans) < 1:
+        blockers.append("one or more plans do not fully satisfy quantity requirements")
+    return blockers
 
 
 def _solver_name(value: Any) -> str:
@@ -490,6 +778,12 @@ AI_TOOL_EXECUTORS: dict[str, Callable[[Session, dict[str, Any], str | None], AiT
     "compare_solutions": _execute_compare_solutions,
     "explain_unplaced_items": _execute_explain_unplaced_items,
     "generate_report": _execute_generate_report,
+    "get_batch_summary": _execute_get_batch_summary,
+    "get_batch_features": _execute_get_batch_features,
+    "create_batch_layout_job": _execute_create_batch_layout_job,
+    "run_batch_layout_job": _execute_run_batch_layout_job,
+    "compare_batch_top3": _execute_compare_batch_top3,
+    "generate_batch_report": _execute_generate_batch_report,
     "export_pdf": _blocked_executor("export_pdf"),
     "export_dxf": _blocked_executor("export_dxf"),
     "write_back_crm": _blocked_executor("write_back_crm"),

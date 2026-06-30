@@ -35,3 +35,6 @@ This addendum records the final local enterprise-hardening work completed after 
 - `GET /api/ai/tools` now requires `ai:use`.
 - AI tool definitions expose `schema_version`, `required_permissions`, `read_only`, `mutates`, `reversible`, `blocked_in_production`, and `requires_human_approval`.
 - AI tool execution checks the declared permission list and continues to block `create_nesting_job`, `export_pdf`, `export_dxf`, and `write_back_crm` inside the AI boundary.
+- Batch AI tools now expose controlled workflow coverage: `get_batch_summary`, `get_batch_features`, `create_batch_layout_job`, `run_batch_layout_job`, `compare_batch_top3`, and `generate_batch_report`.
+- Batch read tools require `ai:use`; batch write tools require both `ai:use` and `batch:write`.
+- Batch AI tools return stored backend features, plan metrics, blocker reasons, and report summaries only. They do not generate production coordinates and do not approve or export production files.
