@@ -2,7 +2,7 @@
 
 ## Audit Inputs
 
-- Repository state audited: current worktree after `bc7559c` (`feat: add enterprise audit contract endpoints`) plus the A8 batch AI tool patch.
+- Repository state audited: current worktree after `60b14fc` (`feat: add batch AI playbook and faster slow gates`) plus the production pattern placement artifact patch.
 - Target documents:
   - `C:\Users\shenh\Downloads\packaging-nesting-ai_一次性企业级升级实施方案.pdf`
   - `C:\Users\shenh\Downloads\packaging-nesting-ai_企业级升级任务Backlog.csv`
@@ -11,9 +11,9 @@
 
 ## Executive Summary
 
-The project has moved beyond the original enterprise skeleton. It now contains persistent batch intake, batch artwork state tracking, feature extraction/classification, compatibility grouping, sheet cut variants, batch layout jobs, production patterns/plans, approval-gated production-plan export, MultiSolver candidate-pool evidence, external CLI solver contracts, benchmark gates, controlled batch AI tools, and a Vue batch workbench.
+The project has moved beyond the original enterprise skeleton. It now contains persistent batch intake, batch artwork state tracking, feature extraction/classification, compatibility grouping, sheet cut variants, batch layout jobs, production patterns/plans with deterministic placement artifacts, approval-gated production-plan export, MultiSolver candidate-pool evidence, external CLI solver contracts, benchmark gates, controlled batch AI tools, and a Vue batch workbench.
 
-It is still not fully production-grade for unattended customer go-live. The largest remaining gaps are true production-coordinate batch planning, real configured PackingSolver/Sparrow binaries contributing legal candidates, native real-PDF geometry acceptance beyond fixture classification, and stronger frontend coverage for dedicated enterprise views, virtualization, and benchmark history.
+It is still not fully production-grade for unattended customer go-live. The largest remaining gaps are configured external-solver production-coordinate acceptance, real PackingSolver/Sparrow binaries contributing legal candidates, native real-PDF geometry acceptance beyond fixture classification, and stronger frontend coverage for dedicated enterprise views, virtualization, and benchmark history.
 
 ## Enterprise-Usable Capabilities
 
@@ -22,7 +22,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | Enterprise platform skeleton | Enterprise usable | `README.md`, `docker-compose.yml`, `backend/app/api/router.py`, `backend/app/services/security.py`, `backend/app/services/repository.py` |
 | RBAC, audit, approval, export governance | Enterprise usable | `backend/app/api/routes/rbac.py`, `backend/app/api/routes/operation_logs.py`, `backend/app/api/routes/solutions.py`, `backend/app/services/workflows.py`, `tests/backend/test_rbac.py`, `tests/backend/test_solution_approval.py` |
 | Production export guardrails | Enterprise usable for single-solution exports | `backend/app/services/workflows.py`, `backend/app/api/routes/solutions.py`, `tests/backend/test_solution_approval.py` |
-| Batch data model | Enterprise foundation present | `backend/app/db/models.py` classes `BatchUpload`, `BatchArtworkItem`, `SheetParentSpec`, `SheetCutVariant`, `BatchLayoutJob`, `BatchLayoutGroup`, `ProductionPattern`, `ProductionPlan`, `ProductionPlanPattern`, `BatchBenchmarkRun`; migration `backend/alembic/versions/0015_batch_layout_enterprise_tables.py` |
+| Batch data model | Enterprise foundation present | `backend/app/db/models.py` classes `BatchUpload`, `BatchArtworkItem`, `SheetParentSpec`, `SheetCutVariant`, `BatchLayoutJob`, `BatchLayoutGroup`, `ProductionPattern`, `ProductionPlan`, `ProductionPlanPattern`, `BatchBenchmarkRun`; migrations `backend/alembic/versions/0015_batch_layout_enterprise_tables.py` and `backend/alembic/versions/0016_production_pattern_placement_artifacts.py` |
 | Batch artwork API | Enterprise foundation present | `backend/app/api/routes/batch_artworks.py` implements upload, preflight, parse, retry-failed, summary; `tests/backend/test_batch_artwork_api.py` |
 | Feature extraction/classification | Enterprise foundation present with real-sample class fixtures | `backend/app/services/batch_artworks.py` classes `ArtworkFeatureExtractor`, `ArtworkClassifier`; `samples/artworks/real-sample-classification-fixtures.json`; `scripts/audit_real_sample_classification.py`; `tests/backend/test_batch_artwork_features.py`, `tests/backend/test_real_sample_classification_fixtures.py` |
 | Compatibility grouping and cut variants | Enterprise foundation present | `backend/app/services/batch_layout.py` classes `CompatibilityGroupingService`, `SheetCutVariantGenerator`; `tests/backend/test_batch_layout_planning.py` |
@@ -38,7 +38,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | Area | MVP behavior | Enterprise gap |
 | --- | --- | --- |
 | Native artwork parsing | SVG/DXF direct parsing and PDF/manual/conversion fallback exist. | Parser is not proven at 99.5% native SVG/DXF success on real customer corpora; PDF/CDR/AI are not production-native parsers. |
-| Batch layout patterns | `PatternPlanner` generates bbox/feature capacity patterns with per-item mixed-order quantity summaries. | Final batch production coordinates are not yet mapped from each selected solver candidate into exact persisted production pattern placements. |
+| Batch layout patterns | `PatternPlanner` generates bbox/feature capacity patterns with per-item mixed-order quantity summaries and persisted deterministic placement JSON/SVG artifacts. | Configured external PackingSolver/Sparrow binary placement acceptance and broader real mixed-irregular proof are still pending. |
 | Top3 production plans | `TopKGlobalPlanSelector` emits highest-utilization, balanced-risk, fastest-production intents with `diversity_score`. | Fallback can still create lower-diversity variants when candidate signatures repeat; Top3 validity depends on candidate-pool evidence and heuristic pattern feasibility, not full physical placement solving for every pattern. |
 | MultiSolver orchestration | Candidate-pool execution runs solver names x seeds x time limits x rotation policies and ranks validated solutions. | Public API method names from the target (`generate_candidate_solutions`, `run_solver_matrix`, `validate_all`, `rank_top_k`) are not first-class methods; current surface is `solve_candidate_pool` plus helper methods. |
 | PackingSolver/Sparrow | Real CLI contracts exist, stdin/stdout JSON is handled, evidence is persisted. | Real binaries are not bundled or configured; without installed binaries these adapters correctly return failed auditable candidates. |
@@ -48,8 +48,8 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 ## Blocking Go-Live Items
 
-1. True production-coordinate batch layout is not complete.
-   Evidence: `backend/app/services/batch_patterns.py` computes production patterns from capacity estimates; preview in `backend/app/api/routes/batch_layout.py` is summary SVG, not exact production placement output.
+1. External-solver production-coordinate batch layout is not complete.
+   Evidence: `backend/app/services/batch_patterns.py` computes production patterns from capacity estimates and now writes deterministic placement artifacts; go-live still needs configured PackingSolver/Sparrow binaries to provide accepted external placement evidence.
 
 2. Real external solvers are contract-ready but not operationally proven.
    Evidence: `backend/app/services/solvers/external_cli_adapters.py` supports CLI contracts; README and tests show missing binaries become failed solutions. Go-live requires configured PackingSolver/Sparrow binaries and real baseline runs.
@@ -75,10 +75,10 @@ It is still not fully production-grade for unattended customer go-live. The larg
   Current evidence is durable in `solver_run_log.payload`, but reporting/search will be stronger with columns for `candidate_id`, `input_sha256`, `stdout/stderr` object keys, `validator_report`, and certificate references.
 
 - Continue hardening `PatternPlanner`, `ProductionPlanBuilder`, and `Top3GlobalPlanSelector`.
-  These responsibilities are now separated into `backend/app/services/batch_patterns.py`; next hardening should focus on exact placement persistence and larger real-sample mixed-pattern coverage.
+  These responsibilities are now separated into `backend/app/services/batch_patterns.py`; next hardening should focus on external-solver placement mapping and larger real-sample mixed-pattern coverage.
 
-- Add exact placement persistence for `ProductionPattern`.
-  `ProductionPattern` currently stores scalar planning metrics and validator summaries. Enterprise production needs per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
+- Expand placement evidence from deterministic planner templates to configured external PackingSolver/Sparrow production placement acceptance.
+  `ProductionPattern` now stores deterministic placement JSON/SVG/checksum/solver metadata. Final go-live still needs external binary evidence and larger real mixed-irregular coverage.
 
 - Keep frontend retry and generated 20000 stress controls aligned with backend evidence wording.
   `frontend/src/services/api.ts` now exposes `retry-failed` and `batch-20000`; dedicated pages and history views are still pending.
@@ -136,7 +136,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | A4 MultiSolverOrchestrator | Foundation complete; public method contract and full cut-variant solver matrix need hardening. |
 | A4 PackingSolverAdapter | Contract complete; real binary acceptance not proven. |
 | A4 SparrowSolverAdapter | Contract complete; real binary acceptance not proven. |
-| A5 PatternPlanner | Extracted to `batch_patterns.py` with mixed multi-item quantity summaries; exact placement persistence and broader real-sample proof still needed. |
+| A5 PatternPlanner | Extracted to `batch_patterns.py` with mixed multi-item quantity summaries and deterministic placement artifacts; broader real-sample and external-solver proof still needed. |
 | A5 Top3GlobalPlanSelector | Extracted with `ProductionPlanBuilder`; stronger diversity/validity proof over real mixed irregular shapes still needed. |
 | A6 Benchmark gate | Foundation complete for OR/787/MOQ, generated batch-1500/20000 endpoint coverage, full local 1500+20000 slow-gate artifact, and explicit synthetic/real labels. |
 | A6 OR-Datasets importer | Present. |
@@ -146,9 +146,9 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 ## Recommended Next Implementation Order
 
-1. Persist exact per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
+1. Add configured PackingSolver/Sparrow binary acceptance evidence and map accepted external placements into `ProductionPattern` artifacts.
 2. Add native PDF/conversion-supplier acceptance evidence before treating PDF die-lines as production geometry.
-3. Add configured PackingSolver/Sparrow binary acceptance evidence.
+3. Broaden real mixed-irregular pattern proof beyond deterministic bbox template artifacts.
 4. Split frontend batch workbench into dedicated enterprise views with virtualization/history when 1500-20000 rows are active.
 5. Promote high-value solver attempt evidence from JSON logs into indexed first-class fields or artifact keys.
 
@@ -161,6 +161,10 @@ This report and the contract patches made with it were verified with:
 - `npm.cmd run build` from `frontend/`: passed.
 - `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-ai-playbook.json`: passed, 7 cases, 0 errors, P95 23 ms.
 - `python scripts\release_preflight.py --include-slow-batch-gates --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files --report-path tmp\release-preflight-ai-playbook.json`: passed; included 400 backend release-gate tests, benchmark gate, full 1500/20000 slow gates, 6 hashed real sample cases, release evidence pack verification, frontend build, and API smoke.
+- `pytest -q tests\backend\test_batch_layout_planning.py tests\backend\test_batch_layout_api.py tests\backend\test_migrations.py`: passed, 8 tests.
+- `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-placement-artifacts.json`: passed, 7 cases, 0 errors, P95 43 ms.
+- `python scripts\enterprise_batch_slow_gates.py --output artifacts\enterprise-batch-slow-gates-placement-artifacts-full.json --batch-1500-count 1500 --batch-20000-count 20000 --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files`: passed, 3 gates, 21,500 generated files, 6 real sample cases, 0 errors, P95 50,927 ms, wall time 122,321 ms.
+- `python scripts\release_preflight.py --include-slow-batch-gates --real-sample-root "D:\大卖数智AI部\包装印刷\甘-包装样例" --hash-real-sample-files --report-path tmp\release-preflight-placement-artifacts.json`: passed, 8 gates including 400 backend release tests, benchmark gate, full 1500/20000 slow gates, release evidence pack verification, frontend build, and API smoke.
 - `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-slow-gates.json`: passed, 7 cases, 0 errors, P95 27 ms.
 - `python scripts\audit_real_sample_classification.py --require-files --output tmp\real-sample-classification-audit.json`: passed, 6 cases, 6 classification matches, 0 missing files.
 - `pytest -q tests\backend\test_enterprise_batch_slow_gates.py tests\backend\test_release_preflight.py tests\backend\test_verify_release_preflight.py`: passed, 51 tests.

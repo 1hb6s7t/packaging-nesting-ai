@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -71,6 +74,34 @@ def test_batch_layout_job_run_outputs_top3_groups_plans_and_preview() -> None:
     assert fetched_plan.status_code == 200
     assert fetched_plan.json()["plan_id"] == plan_id
     assert fetched_plan.json()["patterns"]
+    pattern = fetched_plan.json()["patterns"][0]
+    assert pattern["placement_json"]["schema_version"] == 1
+    assert pattern["placement_json"]["artifact_type"] == "production_pattern_placement"
+    assert pattern["placement_json"]["coordinates_source"] == "deterministic_pattern_planner_not_ai_generated"
+    assert pattern["placement_json"]["placements"]
+    assert pattern["placement_json"]["templates"]
+    assert pattern["placement_json"]["complete_item_coverage"] is True
+    assert pattern["placement_solver"]["name"] == "DeterministicPatternPlacementSolver"
+    assert pattern["placement_solver"]["deterministic"] is True
+    assert pattern["placement_svg"].startswith("<svg")
+    checksum_payload = json.dumps(
+        {"placement_json": pattern["placement_json"], "placement_svg": pattern["placement_svg"]},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert pattern["placement_checksum"] == hashlib.sha256(checksum_payload.encode("utf-8")).hexdigest()
+
+    fetched_pattern = client.get(f"/api/batch-layout/patterns/{pattern['pattern_id']}", headers=headers)
+    assert fetched_pattern.status_code == 200
+    assert fetched_pattern.json()["placement_checksum"] == pattern["placement_checksum"]
+    placement_json = client.get(f"/api/batch-layout/patterns/{pattern['pattern_id']}/placement", headers=headers)
+    assert placement_json.status_code == 200
+    assert placement_json.json()["pattern_id"] == pattern["pattern_id"]
+    placement_svg = client.get(f"/api/batch-layout/patterns/{pattern['pattern_id']}/placement.svg", headers=headers)
+    assert placement_svg.status_code == 200
+    assert "image/svg+xml" in placement_svg.headers["content-type"]
+    assert pattern["pattern_id"] in placement_svg.text
 
     preview = client.get(f"/api/batch-layout/plans/{plan_id}/preview", headers=headers)
     assert preview.status_code == 200
@@ -128,6 +159,7 @@ def test_batch_layout_job_run_outputs_top3_groups_plans_and_preview() -> None:
     download = client.get(f"/api/batch-layout/plans/exports/{export_payload['id']}/download", headers=headers)
     assert download.status_code == 200
     assert download.json()["plan"]["plan_id"] == plan_id
+    assert download.json()["plan"]["patterns"][0]["placement_checksum"] == pattern["placement_checksum"]
 
     rerun = client.post(f"/api/batch-layout/jobs/{job['job_id']}/run", headers=headers)
     assert rerun.status_code == 200

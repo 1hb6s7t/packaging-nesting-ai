@@ -400,6 +400,10 @@ class ProductionPattern(Base, TimestampMixin):
     quantity_fulfillment_rate: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     hard_rule_pass: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     validator_report_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    placement_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    placement_svg: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    placement_checksum: Mapped[str | None] = mapped_column(String(128))
+    placement_solver_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class ProductionPlan(Base, TimestampMixin):

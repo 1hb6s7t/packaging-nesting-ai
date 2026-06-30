@@ -213,6 +213,17 @@ def ensure_sqlite_schema_compat() -> None:
         "p95_runtime_ms": "ALTER TABLE benchmark_run ADD COLUMN p95_runtime_ms INTEGER",
         "metrics_json": "ALTER TABLE benchmark_run ADD COLUMN metrics_json JSON NOT NULL DEFAULT '{}'",
     }
+    production_pattern_columns = (
+        {column["name"] for column in inspector.get_columns("production_pattern")}
+        if "production_pattern" in table_names
+        else set()
+    )
+    production_pattern_ddl = {
+        "placement_json": "ALTER TABLE production_pattern ADD COLUMN placement_json JSON NOT NULL DEFAULT '{}'",
+        "placement_svg": "ALTER TABLE production_pattern ADD COLUMN placement_svg TEXT NOT NULL DEFAULT ''",
+        "placement_checksum": "ALTER TABLE production_pattern ADD COLUMN placement_checksum VARCHAR(128)",
+        "placement_solver_json": "ALTER TABLE production_pattern ADD COLUMN placement_solver_json JSON NOT NULL DEFAULT '{}'",
+    }
     with engine.begin() as connection:
         for column_name, ddl in work_task_ddl.items():
             if "work_task" in table_names and column_name not in work_task_columns:
@@ -234,6 +245,9 @@ def ensure_sqlite_schema_compat() -> None:
                 connection.execute(text(ddl))
         for column_name, ddl in benchmark_run_ddl.items():
             if "benchmark_run" in table_names and column_name not in benchmark_run_columns:
+                connection.execute(text(ddl))
+        for column_name, ddl in production_pattern_ddl.items():
+            if "production_pattern" in table_names and column_name not in production_pattern_columns:
                 connection.execute(text(ddl))
         if "operation_log" in table_names:
             existing_indexes = {item["name"] for item in inspector.get_indexes("operation_log")}

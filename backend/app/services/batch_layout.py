@@ -229,6 +229,10 @@ class BatchLayoutService:
         row = db.get(dbm.ProductionPlan, plan_id)
         return self.plan_from_row(db, row) if row else None
 
+    def get_pattern(self, db: Session, pattern_id: str) -> schemas.ProductionPatternRead | None:
+        row = db.get(dbm.ProductionPattern, pattern_id)
+        return self.pattern_from_row(row) if row else None
+
     def list_cut_variants(self, db: Session, parent_id: str) -> list[schemas.SheetCutVariant]:
         rows = db.scalars(
             select(dbm.SheetCutVariant)
@@ -288,6 +292,10 @@ class BatchLayoutService:
             quantity_fulfillment_rate=row.quantity_fulfillment_rate,
             hard_rule_pass=row.hard_rule_pass,
             validator_report=row.validator_report_json or {},
+            placement_json=row.placement_json or {},
+            placement_svg=row.placement_svg or "",
+            placement_checksum=row.placement_checksum,
+            placement_solver=row.placement_solver_json or {},
             created_at=row.created_at.isoformat(),
             updated_at=row.updated_at.isoformat(),
         )
@@ -408,6 +416,10 @@ class BatchLayoutService:
             quantity_fulfillment_rate=pattern.quantity_fulfillment_rate,
             hard_rule_pass=pattern.hard_rule_pass,
             validator_report_json=pattern.validator_report,
+            placement_json=pattern.placement_json,
+            placement_svg=pattern.placement_svg,
+            placement_checksum=pattern.placement_checksum,
+            placement_solver_json=pattern.placement_solver,
         )
         db.add(row)
         db.flush()

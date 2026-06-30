@@ -71,10 +71,12 @@ error_count=0
 The full enterprise slow gate also passed:
 
 ```text
-report=artifacts\enterprise-batch-slow-gates-full.json
+report=artifacts\enterprise-batch-slow-gates-placement-artifacts-full.json
 synthetic_file_count=21500
 real_sample_case_count=6
 error_count=0
+p95_runtime_ms=50927
+wall_time_ms=122321
 ```
 
 ## Boundary

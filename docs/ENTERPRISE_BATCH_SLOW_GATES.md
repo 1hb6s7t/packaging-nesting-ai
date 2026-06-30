@@ -62,13 +62,15 @@ python scripts\enterprise_batch_slow_gates.py `
 The full local gate has been run against the real sample directory with file hashing:
 
 ```text
-report=artifacts\enterprise-batch-slow-gates-full.json
+report=artifacts\enterprise-batch-slow-gates-placement-artifacts-full.json
 report_status=passed
 synthetic_file_count=21500
 real_sample_case_count=6
 failed_gate_count=0
 error_count=0
+p95_runtime_ms=50927
+wall_time_ms=122321
 coverage=batch_1500,batch_20000,real_sample_directory,sheet_787x1092,moq_1000,top3
 ```
 
-The generated benchmark pipeline uses bulk persistence and bulk parsing inside `EnterpriseBenchmarkRunner.run_batch_pipeline()` so the 1500/20000 slow gates are practical release artifacts without changing the normal user upload/parse transaction behavior.
+The generated benchmark pipeline uses bulk persistence and bulk parsing inside `EnterpriseBenchmarkRunner.run_batch_pipeline()` so the 1500/20000 slow gates are practical release artifacts without changing the normal user upload/parse transaction behavior. Production pattern placement artifacts are bounded to rendered templates plus explicit coverage metadata so this gate remains practical at 20000 generated files.

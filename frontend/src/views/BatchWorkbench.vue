@@ -6,6 +6,7 @@ import {
   type BatchBenchmarkRun,
   type BatchLayoutRunResult,
   type ProductionPlan,
+  type ProductionPattern,
   approveBatchPlan,
   createBatchLayoutJob,
   exportBatchPlan,
@@ -120,6 +121,20 @@ async function loadPreview(plan: ProductionPlan) {
   selectedPlan.value = plan;
   const result = await runStep("preview", () => previewBatchPlan(plan.plan_id));
   if (result) previewSvg.value = result;
+}
+
+function loadPatternPlacement(pattern: ProductionPattern) {
+  previewSvg.value = pattern.placement_svg || "";
+}
+
+function placementCoverage(pattern: ProductionPattern) {
+  const complete = pattern.placement_json.complete_item_coverage === true;
+  const omitted = Number(pattern.placement_json.omitted_item_count || 0);
+  return complete ? "complete" : `truncated +${omitted}`;
+}
+
+function shortChecksum(value: string | null | undefined) {
+  return value ? value.slice(0, 12) : "missing";
 }
 
 async function tryExport(plan: ProductionPlan) {
@@ -346,6 +361,19 @@ function percent(value: number | undefined | null) {
           <el-table-column prop="required_sheets" label="张数" width="80" />
           <el-table-column label="履约" width="100">
             <template #default="{ row }">{{ percent(row.quantity_fulfillment_rate) }}</template>
+          </el-table-column>
+          <el-table-column label="Artifact" width="120">
+            <template #default="{ row }">
+              <el-tag :type="row.placement_checksum ? 'success' : 'danger'">{{ placementCoverage(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="Checksum" width="130">
+            <template #default="{ row }">{{ shortChecksum(row.placement_checksum) }}</template>
+          </el-table-column>
+          <el-table-column label="SVG" width="86">
+            <template #default="{ row }">
+              <el-button size="small" :disabled="!row.placement_svg" @click="loadPatternPlacement(row)">View</el-button>
+            </template>
           </el-table-column>
         </el-table>
       </div>

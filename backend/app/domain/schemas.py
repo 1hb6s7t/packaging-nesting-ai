@@ -281,6 +281,10 @@ class ProductionPatternRead(BaseModel):
     quantity_fulfillment_rate: float = 0
     hard_rule_pass: bool = False
     validator_report: dict[str, Any] = Field(default_factory=dict)
+    placement_json: dict[str, Any] = Field(default_factory=dict)
+    placement_svg: str = ""
+    placement_checksum: str | None = None
+    placement_solver: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
     updated_at: str | None = None
 

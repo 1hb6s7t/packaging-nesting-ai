@@ -217,6 +217,10 @@ export type ProductionPattern = {
   utilization_rate: number;
   quantity_fulfillment_rate: number;
   hard_rule_pass: boolean;
+  placement_json: Record<string, unknown>;
+  placement_svg: string;
+  placement_checksum?: string | null;
+  placement_solver: Record<string, unknown>;
 };
 
 export type ProductionPlan = {

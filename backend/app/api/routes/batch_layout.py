@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -17,6 +19,7 @@ from app.domain.schemas import (
     ProductionPlanApprovalRead,
     ProductionPlanExportRead,
     ProductionPlanRead,
+    ProductionPatternRead,
 )
 from app.services import repository
 from app.services.batch_layout import BatchLayoutService
@@ -116,6 +119,44 @@ def get_batch_layout_plan(
     if plan is None:
         raise HTTPException(status_code=404, detail="production plan not found")
     return plan
+
+
+@router.get("/patterns/{pattern_id}", response_model=ProductionPatternRead)
+def get_batch_layout_pattern(
+    pattern_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProductionPatternRead:
+    pattern = service.get_pattern(db, pattern_id)
+    if pattern is None:
+        raise HTTPException(status_code=404, detail="production pattern not found")
+    return pattern
+
+
+@router.get("/patterns/{pattern_id}/placement")
+def get_batch_layout_pattern_placement(
+    pattern_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    pattern = service.get_pattern(db, pattern_id)
+    if pattern is None:
+        raise HTTPException(status_code=404, detail="production pattern not found")
+    return pattern.placement_json
+
+
+@router.get("/patterns/{pattern_id}/placement.svg")
+def preview_batch_layout_pattern_placement(
+    pattern_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    pattern = service.get_pattern(db, pattern_id)
+    if pattern is None:
+        raise HTTPException(status_code=404, detail="production pattern not found")
+    if not pattern.placement_svg:
+        raise HTTPException(status_code=409, detail="production pattern placement artifact is missing")
+    return Response(pattern.placement_svg, media_type="image/svg+xml")
 
 
 @router.get("/plans/{plan_id}/preview")

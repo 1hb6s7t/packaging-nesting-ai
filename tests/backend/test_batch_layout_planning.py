@@ -105,10 +105,17 @@ def test_pattern_planner_tracks_mixed_item_quantity_fulfillment_by_item() -> Non
     assert quantity_summary["requested_units_by_item"] == {"anchor_box": 1000, "filler_box": 1000}
     assert quantity_summary["units_per_sheet_by_item"] == {"anchor_box": 36, "filler_box": 120}
     assert quantity_summary["required_sheets_by_item"] == {"anchor_box": 28, "filler_box": 9}
-    assert pattern.required_sheets == 28
-    assert quantity_summary["produced_units_by_item"] == {"anchor_box": 1008, "filler_box": 3360}
+    assert pattern.required_sheets == 37
+    assert quantity_summary["produced_units_by_item"] == {"anchor_box": 1008, "filler_box": 1080}
     assert quantity_summary["shortage_units"] == 0
-    assert quantity_summary["overproduction_units_by_item"] == {"anchor_box": 8, "filler_box": 2360}
+    assert quantity_summary["overproduction_units_by_item"] == {"anchor_box": 8, "filler_box": 80}
+    assert pattern.placement_json["schema_version"] == 1
+    assert pattern.placement_json["coordinates_source"] == "deterministic_pattern_planner_not_ai_generated"
+    assert pattern.placement_json["templates"]
+    assert pattern.placement_json["complete_item_coverage"] is True
+    assert pattern.placement_svg.startswith("<svg")
+    assert pattern.placement_checksum
+    assert pattern.placement_solver["name"] == "DeterministicPatternPlacementSolver"
 
     plan = ProductionPlanBuilder().build(
         job_id="job_mixed",
@@ -120,8 +127,8 @@ def test_pattern_planner_tracks_mixed_item_quantity_fulfillment_by_item() -> Non
     plan_quantity_summary = plan.validator_report["quantity_summary"]
 
     assert plan.hard_rule_pass is True
-    assert plan.total_sheets_used == 28
+    assert plan.total_sheets_used == 37
     assert plan.quantity_fulfillment_rate == 1
     assert plan_quantity_summary["produced_units_by_item"]["anchor_box"] == 1008
-    assert plan_quantity_summary["produced_units_by_item"]["filler_box"] == 3360
+    assert plan_quantity_summary["produced_units_by_item"]["filler_box"] == 1080
     assert plan_quantity_summary["shortage_units"] == 0

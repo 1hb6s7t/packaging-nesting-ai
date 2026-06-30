@@ -17,6 +17,8 @@ This addendum records the final local enterprise-hardening work completed after 
 - `backend/app/services/batch_patterns.py` now separates `PatternPlanner`, `ProductionPlanBuilder`, and `TopKGlobalPlanSelector` from batch layout persistence/orchestration.
 - Pattern planning calculates units per sheet, required sheets, produced units, overproduction, shortage, and quantity fulfillment.
 - Batch production patterns and plans now include per-item mixed-order quantity summaries in `validator_report.quantity_summary`.
+- `production_pattern` now persists deterministic placement artifacts (`placement_json`, `placement_svg`, `placement_checksum`, `placement_solver_json`) through Alembic revision `0016_production_pattern_placement_artifacts`.
+- Pattern artifacts are exposed at `GET /api/batch-layout/patterns/{pattern_id}`, `/placement`, and `/placement.svg`; `docs/BATCH_LAYOUT_ARCHITECTURE.md` records the data flow and current external-solver boundary.
 - Expanded planning solves remaining quantities sheet by sheet and can avoid overproduction when exact remaining quantities fit.
 - `benchmark_run` now records enterprise metrics: `hard_rule_pass`, `quantity_fulfillment_rate`, requested/produced/shortage/overproduction units, units per sheet, sheets used, peak RSS, export gate status, case score, baseline delta, P95 runtime, and extensible `metrics_json`.
 - `tests/backend/test_benchmark_stress_787.py` covers 787x1092 sheets for 1000/3000/5000/10000/15000 quantities.
