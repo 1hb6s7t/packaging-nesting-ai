@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "source_root_hint": "D:\\大卖数智AI部\\包装印刷\\甘-包装样例",
+  "parent_sheet_mm": {
+    "width": 787,
+    "height": 1092
+  },
+  "notes": [
+    "These fixtures anchor classification expectations to the real customer sample filenames supplied for enterprise acceptance.",
+    "PDF/AI/CDR files remain conversion/manual-review inputs. The bbox values are representative acceptance fixtures, not native PDF production geometry."
+  ],
+  "cases": [
+    {
+      "case_id": "coffee_machine_full_sheet",
+      "source_filename": "doyomi咖啡机栅格化（蓝）335x189x365mm .pdf",
+      "source_format": "pdf",
+      "product_hint": "coffee_machine",
+      "expected_classification": "FULL_SHEET",
+      "bbox_mm": {
+        "width": 760,
+        "height": 1010
+      }
+    },
+    {
+      "case_id": "soy_milk_machine_anchor",
+      "source_filename": "DOYOMI豆浆破壁机终（栅格化）.pdf",
+      "source_format": "pdf",
+      "product_hint": "soy_milk_machine",
+      "expected_classification": "ANCHOR",
+      "bbox_mm": {
+        "width": 540,
+        "height": 620
+      }
+    },
+    {
+      "case_id": "large_outer_box_anchor",
+      "source_filename": "M20T_外包装盒_V5(3).pdf",
+      "source_format": "pdf",
+      "product_hint": "large_outer_box",
+      "expected_classification": "ANCHOR",
+      "bbox_mm": {
+        "width": 520,
+        "height": 580
+      }
+    },
+    {
+      "case_id": "gage_box_filler",
+      "source_filename": "gage包装外盒.pdf",
+      "source_format": "pdf",
+      "product_hint": "gage_box",
+      "expected_classification": "FILLER",
+      "bbox_mm": {
+        "width": 180,
+        "height": 120
+      }
+    },
+    {
+      "case_id": "capsule_box_filler",
+      "source_filename": "胶囊盒2栅格化.pdf",
+      "source_format": "pdf",
+      "product_hint": "capsule_box",
+      "expected_classification": "FILLER",
+      "bbox_mm": {
+        "width": 220,
+        "height": 140
+      }
+    },
+    {
+      "case_id": "cat_litter_box_oversize",
+      "source_filename": "猫砂盆包装设计稿.pdf",
+      "source_format": "pdf",
+      "product_hint": "cat_litter_box",
+      "expected_classification": "OVERSIZE",
+      "bbox_mm": {
+        "width": 1200,
+        "height": 950
+      }
+    }
+  ]
+}

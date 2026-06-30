@@ -10,6 +10,8 @@ This addendum records the final local enterprise-hardening work completed after 
 
 ## Batch planning and benchmark coverage
 
+- `samples/artworks/real-sample-classification-fixtures.json` records the accepted classes for the real packaging samples: coffee machine `FULL_SHEET`, soy milk machine and large outer box `ANCHOR`, Gage/capsule boxes `FILLER`, and cat litter box `OVERSIZE`.
+- `scripts/audit_real_sample_classification.py` verifies the fixture against the local real-sample directory when it is available, without claiming native PDF production geometry.
 - `backend/app/services/batch_planning.py` provides `single_sheet`, `pattern`, and `expanded` planning modes.
 - `backend/app/services/batch_patterns.py` now separates `PatternPlanner`, `ProductionPlanBuilder`, and `TopKGlobalPlanSelector` from batch layout persistence/orchestration.
 - Pattern planning calculates units per sheet, required sheets, produced units, overproduction, shortage, and quantity fulfillment.

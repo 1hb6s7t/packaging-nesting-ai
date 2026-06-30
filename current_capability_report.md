@@ -24,7 +24,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | Production export guardrails | Enterprise usable for single-solution exports | `backend/app/services/workflows.py`, `backend/app/api/routes/solutions.py`, `tests/backend/test_solution_approval.py` |
 | Batch data model | Enterprise foundation present | `backend/app/db/models.py` classes `BatchUpload`, `BatchArtworkItem`, `SheetParentSpec`, `SheetCutVariant`, `BatchLayoutJob`, `BatchLayoutGroup`, `ProductionPattern`, `ProductionPlan`, `ProductionPlanPattern`, `BatchBenchmarkRun`; migration `backend/alembic/versions/0015_batch_layout_enterprise_tables.py` |
 | Batch artwork API | Enterprise foundation present | `backend/app/api/routes/batch_artworks.py` implements upload, preflight, parse, retry-failed, summary; `tests/backend/test_batch_artwork_api.py` |
-| Feature extraction/classification | Enterprise foundation present | `backend/app/services/batch_artworks.py` classes `ArtworkFeatureExtractor`, `ArtworkClassifier`; `tests/backend/test_batch_artwork_features.py` |
+| Feature extraction/classification | Enterprise foundation present with real-sample class fixtures | `backend/app/services/batch_artworks.py` classes `ArtworkFeatureExtractor`, `ArtworkClassifier`; `samples/artworks/real-sample-classification-fixtures.json`; `scripts/audit_real_sample_classification.py`; `tests/backend/test_batch_artwork_features.py`, `tests/backend/test_real_sample_classification_fixtures.py` |
 | Compatibility grouping and cut variants | Enterprise foundation present | `backend/app/services/batch_layout.py` classes `CompatibilityGroupingService`, `SheetCutVariantGenerator`; `tests/backend/test_batch_layout_planning.py` |
 | Batch layout job/plans | Enterprise foundation present | `backend/app/services/batch_layout.py`, `backend/app/api/routes/batch_layout.py` including job/plan detail endpoints, `tests/backend/test_batch_layout_api.py` |
 | MultiSolver candidate pool | Enterprise foundation present | `backend/app/services/solvers/multi_orchestrator.py`, `backend/app/services/workflows.py`, `tests/backend/test_multi_solver_orchestrator.py`, `tests/backend/test_audit_and_runs.py` |
@@ -109,7 +109,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 - SVG/DXF parsing supports common basic shapes and lines; complex customer exports may include transforms, nested groups, clipping, strokes-as-cuts, malformed units, or vendor-specific DXF entities.
 - PDF bbox fallback is not proven as native production geometry in the batch parser. PDF/AI/CDR should remain conversion/manual-review until a tested parser/supplier path is accepted.
-- The target classification examples from the PDF need a dedicated fixture set and assertions: coffee-machine FULL_SHEET, soy-milk-machine/big box ANCHOR, Gage/capsule box FILLER, cat litter box OVERSIZE.
+- The target classification examples now have a dedicated fixture set and assertions: coffee-machine FULL_SHEET, soy-milk-machine/big box ANCHOR, Gage/capsule box FILLER, cat litter box OVERSIZE. This remains classification evidence, not native PDF die-line extraction evidence.
 
 ## 1500+/20000 Batch Risks
 
@@ -130,7 +130,7 @@ It is still not fully production-grade for unattended customer go-live. The larg
 | A0 架构契约 | Partially complete: `docs/ENTERPRISE_FINALIZATION.md` exists, but this current report identifies missing endpoint contracts and go-live gaps. |
 | A1 数据库迁移 | Mostly complete for listed batch/pattern/plan/benchmark objects; future migration needed for first-class solver attempt evidence and optional indexed produced-units fields beyond validator-report JSON. |
 | A2 批量文件入口 | Mostly complete: upload/preflight/parse/summary/retry exist; native parser success and resumable 1500/20000 UX still need proof. |
-| A3 版图特征和分类 | Foundation complete; target real-sample classification fixture tests still needed. |
+| A3 版图特征和分类 | Foundation complete with real-sample classification fixtures and optional local sample-directory audit; native PDF geometry extraction remains outside this proof. |
 | A3 兼容分组 | Foundation complete by material/thickness/print method/spot color/due date/category/customer; hard customer rules need expansion. |
 | A3 裁切变体 | Foundation complete for parent/rotated/half/third/quarter/custom model input. |
 | A4 MultiSolverOrchestrator | Foundation complete; public method contract and full cut-variant solver matrix need hardening. |
@@ -146,20 +146,21 @@ It is still not fully production-grade for unattended customer go-live. The larg
 
 ## Recommended Next Implementation Order
 
-1. Add real sample fixture classification tests for the PDF examples.
-2. Add slow-release scripts for real sample directory, full 1500 generated pipeline, and 20000 synthetic batch.
-3. Convert generated 1500/20000 endpoint evidence into formal slow gate artifacts with clear synthetic/real dataset labels.
-4. Add operator-facing batch AI playbooks that show controlled query/run/report flows and explicitly exclude export/approval bypass.
-5. Persist exact per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
+1. Add slow-release scripts for real sample directory, full 1500 generated pipeline, and 20000 synthetic batch.
+2. Convert generated 1500/20000 endpoint evidence into formal slow gate artifacts with clear synthetic/real dataset labels.
+3. Add operator-facing batch AI playbooks that show controlled query/run/report flows and explicitly exclude export/approval bypass.
+4. Persist exact per-pattern placement JSON/SVG artifacts tied to deterministic solver output.
+5. Add native PDF/conversion-supplier acceptance evidence before treating PDF die-lines as production geometry.
 
 ## Current Verification Snapshot
 
 This report and the contract patches made with it were verified with:
 
-- `pytest -q tests\backend`: 467 passed, 2 skipped.
+- `pytest -q tests\backend`: 469 passed, 2 skipped.
 - `python -m ruff check backend tests scripts`: passed.
 - `npm.cmd run build` from `frontend/`: passed.
-- `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-patterns.json`: passed, 7 cases, 0 errors, P95 25 ms.
+- `python scripts\benchmark_release_gate.py --output tmp\benchmark-release-gate-real-sample-classification.json`: passed, 7 cases, 0 errors, P95 28 ms.
+- `python scripts\audit_real_sample_classification.py --require-files --output tmp\real-sample-classification-audit.json`: passed, 6 cases, 6 classification matches, 0 missing files.
 - `git diff --check`: no whitespace errors; Windows line-ending warnings only.
 
 This report is an audit artifact plus a contract-alignment record. Any implementation changes after this report must rerun the relevant backend/frontend/release gates before being considered complete.
